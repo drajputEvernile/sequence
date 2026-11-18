@@ -221,3 +221,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- sequence repo ---
+outputs/
+workspace/
+models/*
+!models/README.md
+*.joblib
+# Chart data and ground truth never live in the repo (they stay on the machine that holds them).
+data/*
+!data/splits/

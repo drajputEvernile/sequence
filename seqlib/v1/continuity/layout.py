@@ -1,0 +1,108 @@
+"""Page lines with positions, and section headers, from the OCR JSON files.
+
+Ported: ``load_pages`` (read the chart's OCR JSON from the pipeline workspace) moved to
+``seqlib.io.ocr_files``; the functions here take one page dict, unchanged.
+
+Final2 (Azure) gives lines with polygons and the page size, so it is preferred.
+Final1 (Docling) gives words with polygons; they are grouped into lines here,
+because its markdown is not in top-to-bottom order and its first lines are not
+reliably the page header. A page with neither falls back to its text lines.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Any, Optional
+
+from .engine import Line, normalize
+
+logger = logging.getLogger(__name__)
+
+
+def _extent(polygon: Any, height: float) -> Optional[tuple[float, float]]:
+    try:
+        ys = [float(y) for y in polygon[1::2]]
+    except (TypeError, ValueError):
+        return None
+    if not ys or height <= 0:
+        return None
+    return min(ys) / height, max(ys) / height
+
+
+def lines_from_final2(page: dict[str, Any]) -> list[Line]:
+    meta = (page.get("pagesMeta") or [None])[0]
+    if not meta:
+        return []
+    height = float(meta.get("height") or 0)
+    out = []
+    for line in meta.get("lines") or []:
+        extent = _extent(line.get("polygon"), height)
+        raw = str(line.get("content") or "").strip()
+        text = normalize(raw)
+        if extent and text:
+            out.append(Line(text, *extent, raw=raw))
+    return sorted(out, key=lambda l: (l.top, l.bottom))
+
+
+def lines_from_final1(page: dict[str, Any]) -> list[Line]:
+    """Words grouped into lines: a word joins the line whose vertical middle
+    it overlaps, in left-to-right order."""
+    height = float(page.get("height") or 0)
+    words = []
+    for word in page.get("words") or []:
+        polygon = word.get("polygon")
+        extent = _extent(polygon, height)
+        text = str(word.get("content") or "").strip()
+        if extent and text:
+            words.append((extent[0], extent[1], float(polygon[0]), text))
+    words.sort(key=lambda w: ((w[0] + w[1]) / 2, w[2]))
+
+    grouped: list[list[tuple[float, float, float, str]]] = []
+    for word in words:
+        middle = (word[0] + word[1]) / 2
+        if grouped:
+            last = grouped[-1]
+            top = min(w[0] for w in last)
+            bottom = max(w[1] for w in last)
+            if top <= middle <= bottom:
+                last.append(word)
+                continue
+        grouped.append([word])
+
+    out = []
+    for group in grouped:
+        group.sort(key=lambda w: w[2])
+        raw = " ".join(w[3] for w in group)
+        text = normalize(raw)
+        if text:
+            out.append(Line(text, min(w[0] for w in group), max(w[1] for w in group), raw=raw))
+    return out
+
+
+def section_headers(page: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The page's matched section headers with their top position."""
+    out = []
+    for header in (page or {}).get("section_headers") or []:
+        top = (header.get("norm") or {}).get("top")
+        out.append(
+            {
+                "text": str(header.get("text") or ""),
+                "matched_canonical": str(header.get("matched_canonical") or ""),
+                "top": round(float(top), 4) if top is not None else None,
+            }
+        )
+    return out
+
+
+def page_layout(
+    final2: Optional[dict[str, Any]],
+    final1: Optional[dict[str, Any]],
+) -> tuple[list[Line], list[dict[str, Any]], str]:
+    """(positioned lines, section headers, which engine they came from)."""
+    for page, read, name in ((final2, lines_from_final2, "final2"), (final1, lines_from_final1, "final1")):
+        if page:
+            lines = read(page)
+            if lines:
+                return lines, section_headers(page), name
+    return [], section_headers(final2 or final1), ""
