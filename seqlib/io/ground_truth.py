@@ -97,8 +97,15 @@ class ChartTruth:
             if dupes:
                 out.append(f"sequence numbers used twice: {dupes[:10]}")
             if gaps:
-                moved = sorted(p for p in self.flagged_numbered if self.labels.get(p, "").upper().startswith("J"))
-                why = f" (pages {moved[:10]} are numbered but marked blank / junk / invoice)" if moved else ""
+                # A flagged page whose own number is a missing Main number: most likely a Main
+                # page with a wrong Blank / Junk / Invoice flag (or a J page numbered by mistake).
+                holders = sorted(
+                    (int(self.labels[p][1:]), p) for p in self.flagged_numbered
+                    if self.labels.get(p, "").upper().startswith("J") and self.labels[p][1:].isdigit()
+                    and int(self.labels[p][1:]) in gaps
+                )
+                why = "".join(f"; page {p} has number {g} but is marked blank / junk / invoice"
+                              for g, p in holders[:5])
                 out.append(f"sequence numbers missing: {gaps[:10]}{why}")
         bad = [v for v in self.labels.values() if v and not v.isdigit() and not re.fullmatch(r"J\d+", v, re.I)]
         if bad:
@@ -199,9 +206,9 @@ def load_ground_truth(root: Path, sequence_column: Optional[str] = None,
 
     ``apply_junk_flags`` (config.GT_APPLY_JUNK_FLAGS; None = decide per sheet): whether a page
     marked Blank / Junk / Invoice whose sequence is a plain number is moved to the J series.
-    A client sheet needs it (its blank / junk pages are numbered 1, 2, 3 beside the Main pages).
-    A page_ground_truth export does not: the loader already stored J numbers, and a plain number
-    there was set later (review-ui) -- review-ui scores it as a Main page, so it stays one."""
+    Both sheets in use need it: blank / junk / invoice pages are numbered in their own series
+    (1, 2, 3 beside the Main pages' 1, 2, 3), as the pipeline's loader expects (dbutil
+    ground_truth.py ``junk_sequence``). Off, those numbers collide with the Main ones."""
     default_column, default_pattern, default_flags = _settings()
     if apply_junk_flags is None:
         apply_junk_flags = default_flags
@@ -216,9 +223,7 @@ def load_ground_truth(root: Path, sequence_column: Optional[str] = None,
             column = "pagesequence"  # a page_ground_truth database export
         if column not in keys:
             continue
-        flags = apply_junk_flags
-        if flags is None:  # a page_ground_truth export already holds J numbers
-            flags = not ("chartname" in keys and "pagenumber" in keys and column == "pagesequence")
+        flags = True if apply_junk_flags is None else bool(apply_junk_flags)
         for raw in data:
             row: dict[str, str] = {}
             for i, key in enumerate(keys):

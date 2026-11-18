@@ -149,7 +149,7 @@ def test_v2_trains_on_pipeline_features(raw):
         assert sorted(result.main_order) == sorted(truths[key].main_order)
 
 
-def test_junk_flags_apply_to_the_client_sheet_not_the_export(tmp_path):
+def test_blank_junk_pages_run_their_own_series(tmp_path):
     import csv
 
     from seqlib.io.ground_truth import load_ground_truth
@@ -158,20 +158,18 @@ def test_junk_flags_apply_to_the_client_sheet_not_the_export(tmp_path):
     with open(export, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["id", "chart_name", "page_number", "blank_page", "junk_page", "is_invoice", "page_sequence"])
-        w.writerow([9001, "1_2", 1, "No", "Yes", "No", 1])     # flagged, but numbered by a reviewer
-        w.writerow([9002, "1_2", 2, "No", "No", "No", 2])
-        w.writerow([9003, "1_2", 3, "Yes", "No", "No", "J1"])  # stored J by the loader
+        w.writerow([9001, "1_2", 1, "No", "Yes", "No", 1])   # junk: its own series
+        w.writerow([9002, "1_2", 2, "No", "No", "No", 1])
+        w.writerow([9003, "1_2", 3, "No", "No", "No", 2])
+        w.writerow([9004, "1_2", 4, "Yes", "No", "No", "J2"])
     t = load_ground_truth(export, sequence_column="page_sequence")["1_2"]
-    assert t.main_order == [1, 2] and t.junk_pages == [3] and t.flagged_numbered == [1] and not t.problems()
-    forced = load_ground_truth(export, sequence_column="page_sequence", apply_junk_flags=True)["1_2"]
-    assert forced.main_order == [2] and "numbered but marked" in forced.problems()[0]
+    assert t.main_order == [2, 3] and t.junk_pages == [1, 4] and not t.problems()
 
-    client = tmp_path / "client.csv"
-    with open(client, "w", newline="", encoding="utf-8") as fh:
+    gap = tmp_path / "gap.csv"
+    with open(gap, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["DocumentID", "RecordID", "Id", "Sequence", "Blank Page", "Junk Page", "IsInvoicePage"])
-        w.writerow([2, 1, 1, 1, "No", "Yes", "No"])  # client sheet: junk pages run their own 1, 2 ...
-        w.writerow([2, 1, 2, 1, "No", "No", "No"])
-        w.writerow([2, 1, 3, 2, "No", "No", "No"])
-    c = load_ground_truth(client, sequence_column="Sequence")["1_2"]
-    assert c.main_order == [2, 3] and c.junk_pages == [1]
+        w.writerow(["id", "chart_name", "page_number", "blank_page", "junk_page", "is_invoice", "page_sequence"])
+        w.writerow([1, "1_2", 1, "No", "Yes", "No", 1])  # flagged, but it is Main number 1
+        w.writerow([2, "1_2", 2, "No", "No", "No", 2])
+    problems = load_ground_truth(gap, sequence_column="page_sequence")["1_2"].problems()
+    assert problems == ["sequence numbers missing: [1]; page 1 has number 1 but is marked blank / junk / invoice"]
