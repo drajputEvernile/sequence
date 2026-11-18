@@ -56,12 +56,15 @@ def main() -> int:
         truths = load_ground_truth(cfg.GROUND_TRUTH_PATH)
         bad = {n: t.problems() for n, t in truths.items() if t.problems()}
         names = {d.name for d in dirs}
-        print(f"\nground truth: {len(truths)} charts, {len(bad)} with label problems, "
-              f"{len(set(truths) & names)} also under CHARTS_ROOT")
+        gaps = {n: t.warnings() for n, t in truths.items() if t.warnings() and n not in bad}
+        print(f"\nground truth: {len(truths)} charts, {len(bad)} left out (order unclear), "
+              f"{len(gaps)} kept with gaps in their numbering, {len(set(truths) & names)} also under CHARTS_ROOT")
         flagged = sum(len(t.flagged_numbered) for t in truths.values())
         print(f"  blank / junk / invoice pages (moved to the J series): {flagged}")
         for name, problems in list(bad.items())[:10]:
-            print(f"  {name}: {'; '.join(problems)}")
+            print(f"  LEFT OUT {name}: {'; '.join(problems)}")
+        for name, warning in list(gaps.items())[:5]:
+            print(f"  kept     {name}: {'; '.join(warning)}")
         without_ocr = sorted(set(truths) - names)
         if without_ocr:
             print(f"  ground-truth charts with no chart folder: {len(without_ocr)} (e.g. {without_ocr[:5]})")

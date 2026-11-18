@@ -171,5 +171,7 @@ def test_blank_junk_pages_run_their_own_series(tmp_path):
         w.writerow(["id", "chart_name", "page_number", "blank_page", "junk_page", "is_invoice", "page_sequence"])
         w.writerow([1, "1_2", 1, "No", "Yes", "No", 1])  # flagged, but it is Main number 1
         w.writerow([2, "1_2", 2, "No", "No", "No", 2])
-    problems = load_ground_truth(gap, sequence_column="page_sequence")["1_2"].problems()
-    assert problems == ["sequence numbers missing: [1]; page 1 has number 1 but is marked blank / junk / invoice"]
+    t = load_ground_truth(gap, sequence_column="page_sequence")["1_2"]
+    assert t.problems() == []  # a gap leaves the order clear: kept
+    assert t.warnings() == ["sequence numbers missing: [1]; page 1 has number 1 but is marked blank / junk / invoice"]
+    assert t.main_order == [2]

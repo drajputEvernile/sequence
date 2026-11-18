@@ -86,33 +86,41 @@ class ChartTruth:
         return sorted(p for p, v in self.labels.items() if not v)
 
     def problems(self) -> list[str]:
-        """Label problems that make the chart unusable for scoring."""
+        """Label problems that leave the order unclear: the chart is left out of the split and of
+        every score. (Gaps in the numbering are not one of them: see ``warnings``.)"""
         out = []
         numbers = [int(v) for v in self.labels.values() if v and v.isdigit()]
         if not numbers:
             out.append("no Main page has a sequence")
-        elif sorted(numbers) != list(range(1, len(numbers) + 1)):
+        else:
             dupes = sorted({n for n in numbers if numbers.count(n) > 1})
-            gaps = sorted(set(range(1, max(numbers) + 1)) - set(numbers))
             if dupes:
                 out.append(f"sequence numbers used twice: {dupes[:10]}")
-            if gaps:
-                # A flagged page whose own number is a missing Main number: most likely a Main
-                # page with a wrong Blank / Junk / Invoice flag (or a J page numbered by mistake).
-                holders = sorted(
-                    (int(self.labels[p][1:]), p) for p in self.flagged_numbered
-                    if self.labels.get(p, "").upper().startswith("J") and self.labels[p][1:].isdigit()
-                    and int(self.labels[p][1:]) in gaps
-                )
-                why = "".join(f"; page {p} has number {g} but is marked blank / junk / invoice"
-                              for g, p in holders[:5])
-                out.append(f"sequence numbers missing: {gaps[:10]}{why}")
         bad = [v for v in self.labels.values() if v and not v.isdigit() and not re.fullmatch(r"J\d+", v, re.I)]
         if bad:
             out.append(f"unreadable sequence cells: {bad[:5]}")
         if self.duplicate_rows:
             out.append(f"{self.duplicate_rows} rows repeat a page Id")
         return out
+
+    def warnings(self) -> list[str]:
+        """Gaps in the Main numbering. The order is still clear (the Main pages sorted by their
+        numbers; every measure scores rank, not the raw number), so the chart is kept. A gap is
+        usually a page numbered in the Main series but flagged blank / junk / invoice: the
+        flagged page is in the J series either way, and the other pages' order is the same."""
+        numbers = [int(v) for v in self.labels.values() if v and v.isdigit()]
+        if not numbers:
+            return []
+        gaps = sorted(set(range(1, max(numbers) + 1)) - set(numbers))
+        if not gaps:
+            return []
+        holders = sorted(
+            (int(self.labels[p][1:]), p) for p in self.flagged_numbered
+            if self.labels.get(p, "").upper().startswith("J") and self.labels[p][1:].isdigit()
+            and int(self.labels[p][1:]) in gaps
+        )
+        why = "".join(f"; page {p} has number {g} but is marked blank / junk / invoice" for g, p in holders[:5])
+        return [f"sequence numbers missing: {gaps[:10]}{why}"]
 
     def order_by(self, column: str) -> Optional[list[int]]:
         """Pages ordered by another sequence column (normalised name), None when it is not

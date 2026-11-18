@@ -48,7 +48,8 @@ class DocInventory:
     truth_unlabelled: int = 0
     truth_duplicates_numbered: int = 0  # is_duplicate Yes but given a Main number
     truth_flagged_numbered: int = 0  # blank / junk / invoice pages (their own series -> J)
-    truth_problems: str = ""
+    truth_problems: str = ""  # the order is unclear: left out
+    truth_warnings: str = ""  # gaps in the numbering: kept
     page_counts: str = ""  # images / ocr / pipeline / truth
     pages_agree: Optional[bool] = None
     truth_in_scan_order: Optional[bool] = None
@@ -219,6 +220,7 @@ def build(raw_root: Path, ocr_root: Path, truths: dict[str, ChartTruth], key_reg
             )
             d.truth_flagged_numbered = len(truth.flagged_numbered)
             d.truth_problems = "; ".join(truth.problems())
+            d.truth_warnings = "; ".join(truth.warnings())
             if not d.truth_problems:
                 d.truth_in_scan_order = truth.main_order == sorted(truth.main_order)
         counts = [d.image_files if imgs and not d.notes else None, d.ocr_pages,
@@ -257,6 +259,7 @@ def _summary(docs: list[DocInventory], truths: dict[str, ChartTruth], example_ke
         "documents_with_images_and_ocr": len(sets["images"] & sets["ocr"]),
         "USABLE (all four)": len(usable),
         "usable_without_truth_label_problems": len(clean),
+        "usable_kept_with_numbering_gaps": sum(1 for n in clean if by[n].truth_warnings),
         **missing_from,
         "usable_where_page_counts_agree": sum(1 for n in usable if by[n].pages_agree),
         "usable_where_page_counts_differ": sum(1 for n in usable if by[n].pages_agree is False),
