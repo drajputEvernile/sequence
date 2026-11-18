@@ -50,6 +50,12 @@ DOC_NAME_PATTERN = "{RecordID}_{DocumentID}"
 # The truth column holding the correct order: page_sequence in the page_ground_truth export
 # (Main pages 1..N, blank / junk / invoice pages J1, J2 ...). For the client export: "Sequence".
 GT_SEQUENCE_COLUMN = "page_sequence"
+# A page marked Blank / Junk / Invoice whose sequence is a plain number: False keeps it a Main
+# page (the page_ground_truth export: its blank / junk pages already hold J numbers, a plain
+# number was given later, and review-ui scores it as Main); True moves it to the J series (the
+# client export, where blank / junk pages are numbered beside the Main ones). None = decide
+# from the sheet's columns. inventory.py counts these pages either way.
+GT_APPLY_JUNK_FLAGS = None
 
 # =============================================================================================
 # 2. Workspace (written by scripts/import_ocr.py)

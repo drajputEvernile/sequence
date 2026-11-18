@@ -47,6 +47,7 @@ class DocInventory:
     truth_junk: int = 0
     truth_unlabelled: int = 0
     truth_duplicates_numbered: int = 0  # is_duplicate Yes but given a Main number
+    truth_flagged_numbered: int = 0  # marked blank / junk / invoice but given a Main number
     truth_problems: str = ""
     page_counts: str = ""  # images / ocr / pipeline / truth
     pages_agree: Optional[bool] = None
@@ -216,6 +217,7 @@ def build(raw_root: Path, ocr_root: Path, truths: dict[str, ChartTruth], key_reg
                 1 for p, v in truth.labels.items()
                 if v and v.isdigit() and str(truth.extra.get(p, {}).get("isduplicate", "")).lower().startswith(("y", "t", "1"))
             )
+            d.truth_flagged_numbered = len(truth.flagged_numbered)
             d.truth_problems = "; ".join(truth.problems())
             if not d.truth_problems:
                 d.truth_in_scan_order = truth.main_order == sorted(truth.main_order)
@@ -262,6 +264,7 @@ def _summary(docs: list[DocInventory], truths: dict[str, ChartTruth], example_ke
         "truth_main_pages (usable)": sum(by[n].truth_main for n in usable),
         "truth_set_aside_pages (usable)": sum(by[n].truth_junk for n in usable),
         "truth_duplicates_with_a_main_number (usable)": sum(by[n].truth_duplicates_numbered for n in usable),
+        "truth_blank_junk_invoice_with_a_main_number (usable)": sum(by[n].truth_flagged_numbered for n in usable),
         "pipeline_set_aside_pages (usable)": sum(by[n].pipeline_set_aside for n in usable),
         "usable_already_in_scan_order": sum(1 for n in clean if by[n].truth_in_scan_order),
         "ocr_formats (documents)": dict(Counter(d.ocr_format for d in docs if d.has_ocr).most_common()),

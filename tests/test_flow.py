@@ -147,3 +147,31 @@ def test_v2_trains_on_pipeline_features(raw):
     for key in keys[7:]:
         result = run_v2(load_chart(key), scorer)
         assert sorted(result.main_order) == sorted(truths[key].main_order)
+
+
+def test_junk_flags_apply_to_the_client_sheet_not_the_export(tmp_path):
+    import csv
+
+    from seqlib.io.ground_truth import load_ground_truth
+
+    export = tmp_path / "export.csv"
+    with open(export, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["id", "chart_name", "page_number", "blank_page", "junk_page", "is_invoice", "page_sequence"])
+        w.writerow([9001, "1_2", 1, "No", "Yes", "No", 1])     # flagged, but numbered by a reviewer
+        w.writerow([9002, "1_2", 2, "No", "No", "No", 2])
+        w.writerow([9003, "1_2", 3, "Yes", "No", "No", "J1"])  # stored J by the loader
+    t = load_ground_truth(export, sequence_column="page_sequence")["1_2"]
+    assert t.main_order == [1, 2] and t.junk_pages == [3] and t.flagged_numbered == [1] and not t.problems()
+    forced = load_ground_truth(export, sequence_column="page_sequence", apply_junk_flags=True)["1_2"]
+    assert forced.main_order == [2] and "numbered but marked" in forced.problems()[0]
+
+    client = tmp_path / "client.csv"
+    with open(client, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["DocumentID", "RecordID", "Id", "Sequence", "Blank Page", "Junk Page", "IsInvoicePage"])
+        w.writerow([2, 1, 1, 1, "No", "Yes", "No"])  # client sheet: junk pages run their own 1, 2 ...
+        w.writerow([2, 1, 2, 1, "No", "No", "No"])
+        w.writerow([2, 1, 3, 2, "No", "No", "No"])
+    c = load_ground_truth(client, sequence_column="Sequence")["1_2"]
+    assert c.main_order == [2, 3] and c.junk_pages == [1]

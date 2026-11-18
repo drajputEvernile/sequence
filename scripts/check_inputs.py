@@ -58,6 +58,9 @@ def main() -> int:
         names = {d.name for d in dirs}
         print(f"\nground truth: {len(truths)} charts, {len(bad)} with label problems, "
               f"{len(set(truths) & names)} also under CHARTS_ROOT")
+        flagged = sum(len(t.flagged_numbered) for t in truths.values())
+        print(f"  pages marked blank / junk / invoice that have a Main number: {flagged} "
+              f"(GT_APPLY_JUNK_FLAGS = {getattr(cfg, 'GT_APPLY_JUNK_FLAGS', None)!r}: None / False keeps them Main)")
         for name, problems in list(bad.items())[:10]:
             print(f"  {name}: {'; '.join(problems)}")
         without_ocr = sorted(set(truths) - names)

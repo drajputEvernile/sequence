@@ -67,6 +67,9 @@ class ChartTruth:
     # page_number -> the other columns kept (EXTRA_COLUMNS), as text
     extra: dict[int, dict[str, str]] = field(default_factory=dict)
     duplicate_rows: int = 0  # rows naming a page already read
+    # Pages marked Blank / Junk / Invoice whose sequence is a plain (Main) number: kept as Main
+    # when the flags are not applied (GT_APPLY_JUNK_FLAGS False), moved to J when they are.
+    flagged_numbered: list[int] = field(default_factory=list)
 
     @property
     def main_order(self) -> list[int]:
@@ -94,7 +97,9 @@ class ChartTruth:
             if dupes:
                 out.append(f"sequence numbers used twice: {dupes[:10]}")
             if gaps:
-                out.append(f"sequence numbers missing: {gaps[:10]}")
+                moved = sorted(p for p in self.flagged_numbered if self.labels.get(p, "").upper().startswith("J"))
+                why = f" (pages {moved[:10]} are numbered but marked blank / junk / invoice)" if moved else ""
+                out.append(f"sequence numbers missing: {gaps[:10]}{why}")
         bad = [v for v in self.labels.values() if v and not v.isdigit() and not re.fullmatch(r"J\d+", v, re.I)]
         if bad:
             out.append(f"unreadable sequence cells: {bad[:5]}")
@@ -165,14 +170,15 @@ def iter_files(root: Path) -> Iterator[Path]:
             yield path
 
 
-def _settings() -> tuple[str, str]:
+def _settings() -> tuple[str, str, Optional[bool]]:
     try:
         from seqlib.settings import cfg
 
         return (norm_header(getattr(cfg, "GT_SEQUENCE_COLUMN", "page_sequence")),
-                getattr(cfg, "DOC_NAME_PATTERN", "{RecordID}_{DocumentID}"))
+                getattr(cfg, "DOC_NAME_PATTERN", "{RecordID}_{DocumentID}"),
+                getattr(cfg, "GT_APPLY_JUNK_FLAGS", None))
     except Exception:  # noqa: BLE001 - usable without a config
-        return "pagesequence", "{RecordID}_{DocumentID}"
+        return "pagesequence", "{RecordID}_{DocumentID}", None
 
 
 def chart_name_of(row: dict[str, str], pattern: str) -> str:
@@ -187,9 +193,18 @@ def chart_name_of(row: dict[str, str], pattern: str) -> str:
 
 
 def load_ground_truth(root: Path, sequence_column: Optional[str] = None,
-                      name_pattern: Optional[str] = None) -> dict[str, ChartTruth]:
-    """Every document's truth from a file or a folder of CSV / TSV / XLSX sheets."""
-    default_column, default_pattern = _settings()
+                      name_pattern: Optional[str] = None,
+                      apply_junk_flags: Optional[bool] = None) -> dict[str, ChartTruth]:
+    """Every document's truth from a file or a folder of CSV / TSV / XLSX sheets.
+
+    ``apply_junk_flags`` (config.GT_APPLY_JUNK_FLAGS; None = decide per sheet): whether a page
+    marked Blank / Junk / Invoice whose sequence is a plain number is moved to the J series.
+    A client sheet needs it (its blank / junk pages are numbered 1, 2, 3 beside the Main pages).
+    A page_ground_truth export does not: the loader already stored J numbers, and a plain number
+    there was set later (review-ui) -- review-ui scores it as a Main page, so it stays one."""
+    default_column, default_pattern, default_flags = _settings()
+    if apply_junk_flags is None:
+        apply_junk_flags = default_flags
     seq_col = norm_header(sequence_column) if sequence_column else default_column
     pattern = name_pattern or default_pattern
     out: dict[str, ChartTruth] = {}
@@ -201,6 +216,9 @@ def load_ground_truth(root: Path, sequence_column: Optional[str] = None,
             column = "pagesequence"  # a page_ground_truth database export
         if column not in keys:
             continue
+        flags = apply_junk_flags
+        if flags is None:  # a page_ground_truth export already holds J numbers
+            flags = not ("chartname" in keys and "pagenumber" in keys and column == "pagesequence")
         for raw in data:
             row: dict[str, str] = {}
             for i, key in enumerate(keys):
@@ -213,12 +231,15 @@ def load_ground_truth(root: Path, sequence_column: Optional[str] = None,
             if not chart or page is None:
                 continue
             value = _clean_sequence(row.get(column))
-            if value and any(_yes(row.get(k)) for k in ("blankpage", "junkpage", "isinvoicepage", "isinvoice")):
-                value = _junk_label(value)
+            flagged = any(_yes(row.get(k)) for k in ("blankpage", "junkpage", "isinvoicepage", "isinvoice"))
             truth = out.setdefault(chart, ChartTruth(chart))
             if page in truth.labels:
                 truth.duplicate_rows += 1
                 continue
+            if value and value.isdigit() and flagged:
+                truth.flagged_numbered.append(page)
+                if flags:
+                    value = _junk_label(value)
             truth.labels[page] = value
             truth.extra[page] = {k: row[k] for k in EXTRA_COLUMNS if k in row}
     return out
