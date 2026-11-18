@@ -30,7 +30,7 @@ python -m pytest -q tests         # 88 tests, including the pipeline's own v1 te
 Four inputs, all already produced (nothing is re-run):
 
 1. raw page images: one folder per document, `RecordID_DocumentID`
-2. their OCR: same folder names
+2. their OCR: same folder names; inside each, only the `ocr/` subfolder is read (`OCR_SUBFOLDER` in config.py)
 3. the full pipeline outputs: one CSV, one row per page (the imaging_final export)
 4. the ground truth: one CSV, one row per page (the page_ground_truth export)
 

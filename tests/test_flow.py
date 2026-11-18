@@ -85,13 +85,23 @@ def test_import_and_chart_reads_pipeline_values(raw):
         assert chart.pages[0].final2["pagesMeta"][0]["words"]
 
 
+def test_only_the_ocr_subfolder_is_read(raw):
+    from seqlib.eval.inventory import _entries, source_files
+
+    _, ocr = source_files(cfg.RAW_DOCS_ROOT, cfg.OCR_DOCS_ROOT, cfg.DOC_KEY_REGEX)
+    key = sorted(raw)[0]
+    assert [p.parent.name for p in ocr[key]] == ["ocr"]  # not staging/extraction.json, not imaging/
+    everything = _entries(cfg.OCR_DOCS_ROOT, cfg.DOC_KEY_REGEX)  # without the subfolder setting
+    assert {p.parent.name for p in everything[key]} == {"ocr", "staging", "imaging"}
+
+
 def test_per_page_azure_files_convert(tmp_path):
     from seqlib.extract.ocr_convert import convert_document
 
     make_raw_dataset(tmp_path / "raw", tmp_path / "ocr", tmp_path / "p.csv", tmp_path / "gt.csv",
                      n_docs=1, extra_docs=0, per_page_ocr=True)
     key = next((tmp_path / "ocr").iterdir()).name
-    files = sorted((tmp_path / "ocr" / key).iterdir())
+    files = sorted((tmp_path / "ocr" / key / "ocr").iterdir())
     converted = convert_document(files, key, {})
     assert sorted(converted.final2) == list(range(1, len(files) + 1))
 

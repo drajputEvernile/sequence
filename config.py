@@ -30,7 +30,14 @@ REPO = Path(__file__).resolve().parent
 # 1. The four inputs (read only)
 # =============================================================================================
 RAW_DOCS_ROOT = Path(r"F:\Data\sequence\raw_documents")   # <RAW_DOCS_ROOT>/<RecordID_DocumentID>/1.png ...
-OCR_DOCS_ROOT = Path(r"F:\Data\sequence\ocr")             # <OCR_DOCS_ROOT>/<RecordID_DocumentID>/...
+OCR_DOCS_ROOT = Path(r"F:\Data\sequence\ocr")             # <OCR_DOCS_ROOT>/<RecordID_DocumentID>/ocr/...
+
+# The folder inside each document folder that holds what is wanted ("" = the whole document
+# folder). The OCR comes laid out like the pipeline's workspace, one folder per document with
+# ocr/, imaging/, staging/ ... inside it: only <document>/ocr/ is read.
+RAW_SUBFOLDER = ""
+OCR_SUBFOLDER = "ocr"
+
 PIPELINE_OUTPUT_CSV = Path(r"F:\Data\sequence\imaging_output_full.csv")
 GROUND_TRUTH_PATH = Path(r"F:\Data\sequence\ground_truth.csv")
 

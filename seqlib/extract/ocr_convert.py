@@ -133,6 +133,10 @@ def convert_document(ocr_files: list[Path], doc_key: str, image_names: dict[int,
 
     for path in sorted(ocr_files):
         suffix = path.suffix.lower()
+        if suffix == ".txt" and re.search(r"_final[12]$", path.stem, re.I):
+            # The pipeline's legacy <doc>_final1.txt (its JSON twin is what is read): not a page.
+            out.notes.append(f"{path.name}: legacy pipeline text file, skipped (the .json is read)")
+            continue
         if suffix == ".txt":
             prelim = read_prelim(path)
             if prelim:

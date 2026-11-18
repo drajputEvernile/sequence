@@ -44,3 +44,5 @@ DOC_KEY_REGEX = r"^(?P<RecordID>\d+)_(?P<DocumentID>\d+)"
 DOC_NAME_PATTERN = "{RecordID}_{DocumentID}"
 REPO = _REPO
 PIPELINE_OUTPUT_CSV = _TMP / "flow" / "imaging_output_full.csv"
+RAW_SUBFOLDER = ""
+OCR_SUBFOLDER = "ocr"

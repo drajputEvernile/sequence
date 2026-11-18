@@ -184,16 +184,24 @@ def make_raw_dataset(raw_root: Path, ocr_root: Path, pipeline_csv: Path, gt_path
             pages = json.loads((Path(tmp) / key / "ocr" / f"{key}_final2.json").read_text(encoding="utf-8"))["pages"]
             if c < n_docs:
                 (raw_root / key).mkdir(parents=True, exist_ok=True)
-                (ocr_root / key).mkdir(parents=True, exist_ok=True)
+                # the pipeline workspace layout: <doc>/ocr/ holds the OCR, beside folders that
+                # hold other JSON / text (which must not be read as OCR)
+                ocr_dir = ocr_root / key / "ocr"
+                ocr_dir.mkdir(parents=True, exist_ok=True)
+                for other in ("staging", "imaging"):
+                    (ocr_root / key / other).mkdir(exist_ok=True)
+                (ocr_root / key / "staging" / "extraction.json").write_text('{"version": 1, "pages": {}}',
+                                                                            encoding="utf-8")
+                (ocr_root / key / "imaging" / "notes.txt").write_text("not ocr", encoding="utf-8")
                 for number in range(1, len(pages) + 1):
                     Image.new("L", (40, 52), 255).save(raw_root / key / f"{number}.png")
                 azure = [_azure_page(p, n) for n, p in enumerate(pages, start=1)]
                 if per_page_ocr:
                     for n, page in enumerate(azure, start=1):
-                        (ocr_root / key / f"{key}_{n}.json").write_text(
+                        (ocr_dir / f"{key}_{n}.json").write_text(
                             json.dumps({"analyzeResult": {"pages": [page]}}), encoding="utf-8")
                 else:
-                    (ocr_root / key / f"{key}.json").write_text(json.dumps(
+                    (ocr_dir / f"{key}.json").write_text(json.dumps(
                         {"status": "succeeded", "analyzeResult": {"apiVersion": "2024-11-30", "pages": azure}}),
                         encoding="utf-8")
             truths[key] = order

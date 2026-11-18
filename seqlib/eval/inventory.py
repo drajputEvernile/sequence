@@ -68,8 +68,9 @@ def doc_key(name: str, key_regex: str) -> Optional[str]:
     return m.group(0) if m else None
 
 
-def _entries(root: Path, key_regex: str) -> dict[str, list[Path]]:
-    """key -> the files that belong to it (everything inside its folder, or files named after it)."""
+def _entries(root: Path, key_regex: str, subfolder: str = "") -> dict[str, list[Path]]:
+    """key -> the files that belong to it: everything inside its folder -- only inside
+    ``<folder>/<subfolder>`` when a subfolder is given -- or files named after it."""
     out: dict[str, list[Path]] = {}
     if not root or not Path(root).is_dir():
         return out
@@ -77,17 +78,29 @@ def _entries(root: Path, key_regex: str) -> dict[str, list[Path]]:
         key = doc_key(entry.name, key_regex)
         if not key:
             continue
-        files = [p for p in entry.rglob("*") if p.is_file()] if entry.is_dir() else [entry]
+        if entry.is_dir():
+            base = entry / subfolder if subfolder else entry
+            files = [p for p in base.rglob("*") if p.is_file()] if base.is_dir() else []
+        else:
+            files = [entry]
         out.setdefault(key, []).extend(files)
     return out
 
 
+def _subfolders() -> tuple[str, str]:
+    from seqlib.settings import cfg
+
+    return (str(getattr(cfg, "RAW_SUBFOLDER", "") or "").strip("/\\"),
+            str(getattr(cfg, "OCR_SUBFOLDER", "") or "").strip("/\\"))
+
+
 def source_files(raw_root: Path, ocr_root: Path, key_regex: str) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
-    """(images by doc, OCR files by doc); one walk when the two roots are the same folder."""
-    raw = _entries(raw_root, key_regex)
-    same = raw_root and ocr_root and Path(ocr_root).exists() and Path(raw_root).exists() and \
-        Path(ocr_root).resolve() == Path(raw_root).resolve()
-    ocr = raw if same else _entries(ocr_root, key_regex)
+    """(images by doc, OCR files by doc). Inside each document folder only config.RAW_SUBFOLDER /
+    config.OCR_SUBFOLDER is read when set (the pipeline workspace keeps its OCR in ``<doc>/ocr/``
+    beside imaging/, staging/ ... which are not OCR)."""
+    raw_sub, ocr_sub = _subfolders()
+    raw = _entries(raw_root, key_regex, raw_sub)
+    ocr = _entries(ocr_root, key_regex, ocr_sub)
     images = {k: [p for p in v if p.suffix.lower() in IMAGE_SUFFIXES] for k, v in raw.items()}
     ocr = {k: [p for p in v if p.suffix.lower() in OCR_SUFFIXES] for k, v in ocr.items()}
     return {k: v for k, v in images.items() if v}, {k: v for k, v in ocr.items() if v}
