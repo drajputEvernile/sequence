@@ -94,6 +94,9 @@ SPLIT_SEED = 13
 # 4. Sequencing models
 # =============================================================================================
 V2_MODEL_PATH = REPO / "models" / "v2" / "v2_pair_scorer.joblib"
+# Which pages are set aside (blank / junk / duplicate -> J series), learned from the truth
+# (scripts/train_setaside.py; used by evaluate.py --set-aside model).
+SETASIDE_MODEL_PATH = REPO / "models" / "setaside" / "setaside_model.joblib"
 # Optional local sentence-embedding model folder (e.g. all-MiniLM-L6-v2). None = off.
 EMBEDDING_MODEL_PATH = None
 EMBEDDING_DEVICE = "cpu"         # "cuda" on a GPU machine

@@ -175,3 +175,69 @@ def test_blank_junk_pages_run_their_own_series(tmp_path):
     assert t.problems() == []  # a gap leaves the order clear: kept
     assert t.warnings() == ["sequence numbers missing: [1]; page 1 has number 1 but is marked blank / junk / invoice"]
     assert t.main_order == [2]
+
+
+def test_setaside_model_trains_and_applies(raw):
+    from seqlib.eval.metrics import score_chart
+    from seqlib.io.chart import load_chart
+    from seqlib.v1.runner import run_scan_order
+    from seqlib.v2.setaside import SetAsideModel, train
+
+    truths = truths_of()
+    keys = sorted(raw)[:N_DOCS]
+    examples = [(load_chart(k), truths[k]) for k in keys]
+    model = train(examples, folds=3)
+    rep = model.report
+    assert rep["documents"] == N_DOCS and rep["set_aside_in_truth"] == N_DOCS  # one cover page each
+    assert "pipeline_verdict (train, for comparison)" in rep and 0.1 <= model.threshold <= 0.9
+    model.save(cfg.SETASIDE_MODEL_PATH)
+    model = SetAsideModel.load(cfg.SETASIDE_MODEL_PATH)
+    chart = model.apply(load_chart(keys[0]))
+    assert all(p.group_override in ("main", "junk", "blank", "duplicate") for p in chart.pages)
+    s = score_chart(truths[keys[0]], *(lambda r: (r.main_order, r.junk_pages))(run_scan_order(chart)))
+    assert s.pages == len(truths[keys[0]].main_order)
+
+
+def test_truth_set_aside_makes_strict_equal_position(raw):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    from seqlib.eval.metrics import score_chart
+    from seqlib.io.chart import load_chart
+    from seqlib.v1.runner import run_scan_order
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts"))
+    spec = importlib.util.spec_from_file_location("evaluate_script", root / "scripts" / "evaluate.py")
+    evaluate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(evaluate)
+    truths = truths_of()
+    for key in sorted(raw)[:N_DOCS]:
+        chart = load_chart(key)
+        chart.pages[0].rows["pipeline"]["blank_junk_flag"] = "junk"  # a pipeline error on page 1
+        evaluate.set_aside_by_truth(chart, truths[key])
+        r = run_scan_order(chart)
+        s = score_chart(truths[key], r.main_order, r.junk_pages)
+        assert s.strict_correct == s.position_correct and s.junk_fp == 0 and s.junk_fn == 0
+
+
+def test_explain_rules_score_every_document(raw):
+    from seqlib.eval.explain import RULES, explain, rule_effect
+    from seqlib.io.chart import load_chart
+
+    truths = truths_of()
+    moved, in_order = [], []
+    for key in sorted(raw)[:N_DOCS]:
+        t = truths[key]
+        e = explain(load_chart(key), t)
+        assert set(e.scores) == set(RULES)
+        if t.main_order == sorted(t.main_order):
+            assert e.scores["scan"] == 1.0 and e.best == "scan"
+            in_order.append(e)
+        else:
+            assert e.scores["scan"] < 1.0 and e.table and all("page" in r and "dos" in r for r in e.table)
+            assert all(r["dos"] == "-" or r["dos"].startswith("D") for r in e.table)  # no real dates
+            moved.append(e)
+    effect = rule_effect(moved, in_order)
+    assert effect["scan"]["in_order_docs_broken"] == 0 and effect["scan"]["moved_docs_fixed"] == 0

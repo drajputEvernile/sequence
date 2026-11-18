@@ -7,7 +7,10 @@
     python scripts/evaluate.py --method v2              # needs config.V2_MODEL_PATH (scripts/train_v2.py)
     python scripts/evaluate.py --method v2 --oracle-junk     # order the truth's Main pages (ordering alone)
 
-    --split test (default) | train | all
+    --set-aside pipeline (default) | model | truth   which pages are set aside (the J series):
+        the pipeline's blank_junk_flag, the set-aside model (scripts/train_setaside.py), or the
+        truth's own (an upper bound: what ordering alone scores)
+    --split test (default) | train | all             all = train + test (the usable documents)
 
 Writes <OUTPUT_ROOT>/eval/<method>_<split>_<time>/: summary.json, per_chart.csv, errors.txt.
 """
@@ -45,6 +48,13 @@ def build_method(name: str, documents: str, oracle: bool):
     raise SystemExit(f"unknown method {name}")
 
 
+def set_aside_by_truth(chart, truth) -> None:
+    junk = set(truth.junk_pages)
+    for page in chart.pages:
+        if truth.labels.get(page.page_number):
+            page.group_override = "junk" if page.page_number in junk else "main"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--method", required=True, choices=("scan", "v1", "v1_csv", "v2"))
@@ -53,17 +63,27 @@ def main() -> int:
                     help="v1: where its continuity documents come from")
     ap.add_argument("--oracle-junk", action="store_true",
                     help="v2: order the truth's Main pages, so blank / junk errors do not count")
+    ap.add_argument("--set-aside", choices=("pipeline", "model", "truth"), default="pipeline",
+                    help="which pages are set aside (J series)")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
+    if args.method == "v1_csv" and args.set_aside != "pipeline":
+        raise SystemExit("v1_csv is production's own answer; use --method scan / v1 / v2 with --set-aside")
+    setaside_model = None
+    if args.set_aside == "model":
+        from seqlib.v2.setaside import SetAsideModel
+
+        setaside_model = SetAsideModel.load(cfg.SETASIDE_MODEL_PATH)
 
     truths = load_ground_truth(cfg.GROUND_TRUTH_PATH)
-    names = sorted(truths) if args.split == "all" else read_split(cfg.SPLIT_FILE)[args.split]
+    split = read_split(cfg.SPLIT_FILE)
+    names = split["train"] + split["test"] if args.split == "all" else split[args.split]
     names = [n for n in names if n in truths and not truths[n].problems()]
     if args.limit:
         names = names[: args.limit]
     method = build_method(args.method, args.documents, args.oracle_junk)
 
-    tag = args.method + (f"-{args.documents}" if args.method == "v1" else "") + ("-oracle" if args.oracle_junk else "")
+    tag = args.method + (f"-{args.documents}" if args.method == "v1" else "") + ("-oracle" if args.oracle_junk else "")         + (f"-setaside_{args.set_aside}" if args.set_aside != "pipeline" else "")
     out = cfg.OUTPUT_ROOT / "eval" / f"{tag}_{args.split}_{datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
     scores, failed, rows = [], {}, []
@@ -72,6 +92,10 @@ def main() -> int:
     for k, name in enumerate(names, start=1):
         try:
             chart = load_chart(name)
+            if setaside_model is not None:
+                setaside_model.apply(chart)
+            elif args.set_aside == "truth":
+                set_aside_by_truth(chart, truths[name])
             result = method(chart, truths[name])
         except Exception as exc:  # noqa: BLE001
             failed[name] = repr(exc)

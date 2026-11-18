@@ -46,3 +46,4 @@ REPO = _REPO
 PIPELINE_OUTPUT_CSV = _TMP / "flow" / "imaging_output_full.csv"
 RAW_SUBFOLDER = ""
 OCR_SUBFOLDER = "ocr"
+SETASIDE_MODEL_PATH = _TMP / "setaside.joblib"

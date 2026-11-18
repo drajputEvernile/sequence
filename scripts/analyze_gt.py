@@ -24,7 +24,14 @@ def main() -> int:
     ap.add_argument("--no-charts", action="store_true", help="ground truth only (skip reading OCR)")
     args = ap.parse_args()
     truths = load_ground_truth(cfg.GROUND_TRUTH_PATH)
-    names = sorted(truths) if args.split == "all" else read_split(cfg.SPLIT_FILE)[args.split]
+    if args.split == "all":
+        try:
+            split = read_split(cfg.SPLIT_FILE)
+            names = split["train"] + split["test"]
+        except FileNotFoundError:
+            names = sorted(truths)
+    else:
+        names = read_split(cfg.SPLIT_FILE)[args.split]
     rows = []
     for name in names:
         chart = None

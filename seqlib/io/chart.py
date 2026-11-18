@@ -39,6 +39,9 @@ class Page:
     final2: Optional[dict[str, Any]] = None  # the page's final2 JSON object
     # One row per optional CSV (config.INPUT_FILES key -> the page's row).
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # main | blank | junk | duplicate decided by something else than the pipeline (the set-aside
+    # model, or the truth for an oracle run); None = the pipeline's verdict.
+    group_override: Optional[str] = None
 
     @property
     def final1_text(self) -> str:
@@ -78,7 +81,9 @@ class Page:
     @property
     def group(self) -> str:
         """main | blank | junk | duplicate: the pipeline's final blank / junk verdict (its outputs
-        CSV, else its junk CSV); main without one."""
+        CSV, else its junk CSV); main without one. ``group_override`` wins when set."""
+        if self.group_override:
+            return self.group_override
         if self.pipeline:
             return pipeline_csv.group(self.pipeline)
         row = self.rows.get("junk") or {}
