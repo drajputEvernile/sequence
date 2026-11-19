@@ -241,3 +241,85 @@ def test_explain_rules_score_every_document(raw):
             moved.append(e)
     effect = rule_effect(moved, in_order)
     assert effect["scan"]["in_order_docs_broken"] == 0 and effect["scan"]["moved_docs_fixed"] == 0
+
+
+def test_shuffle_ops_always_change_the_order():
+    import random
+
+    from seqlib.eval.shuffle import shuffle_order
+
+    rng = random.Random(1)
+    for n in (4, 5, 12, 40):
+        pages = list(range(1, n + 1))
+        for _ in range(30):
+            order, ops = shuffle_order(pages, rng, 3)
+            assert sorted(order) == pages and order != pages and ops
+
+
+def test_shuffle_test_copies_renames_and_hides_order(raw, tmp_path):
+    import csv
+
+    from seqlib.eval.inventory import source_files
+    from seqlib.eval.shuffle import CONFIG_TEMPLATE, build, choose
+    from seqlib.io.ground_truth import load_ground_truth
+    from seqlib.io.pipeline_csv import load_pipeline_csv
+
+    truths = truths_of()
+    pipeline = load_pipeline_csv(cfg.PIPELINE_OUTPUT_CSV)
+    images, ocr = source_files(cfg.RAW_DOCS_ROOT, cfg.OCR_DOCS_ROOT, cfg.DOC_KEY_REGEX)
+    before = {p: p.stat().st_mtime_ns for v in images.values() for p in v}
+    docs = choose(truths, sorted(raw)[:N_DOCS], 5, 4, seed=3)
+    out = tmp_path / "shuffle"
+    made = build(out, docs, truths, pipeline, cfg.PIPELINE_OUTPUT_CSV, GT, images, ocr, seed=3, max_ops=3)
+    assert {p: p.stat().st_mtime_ns for v in images.values() for p in v} == before  # originals untouched
+    assert len(made) == len(docs) and all(m.pages_moved for m in made)
+
+    new_truth = load_ground_truth(out / "ground_truth.csv", sequence_column="page_sequence")
+    for m in made:
+        # the truth order, renamed, is the original truth order mapped through the renaming
+        assert new_truth[m.doc].main_order == [m.new_of[p] for p in truths[m.doc].main_order]
+        assert sorted(p.name for p in (out / "raw_images" / m.doc).iterdir()) == sorted(
+            f"{n}.png" for n in m.new_of.values())
+    with open(out / "imaging_output_full.csv", newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows and all(r["seq"] == "" and r["document_seq"] == "" and r["page_type_source"] == "" for r in rows)
+    manifest = json.loads((out / "shuffle_manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["documents"]) == len(docs)
+    assert CONFIG_TEMPLATE.startswith("r\"\"\"")
+
+
+def test_shuffle_test_end_to_end_with_its_config(raw, tmp_path):
+    """The generated config points every reader at the shuffle folder; scan order is broken there
+    and the truth still loads."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from seqlib.eval.inventory import source_files
+    from seqlib.eval.shuffle import CONFIG_TEMPLATE, build, choose
+    from seqlib.io.pipeline_csv import load_pipeline_csv
+
+    root = Path(__file__).resolve().parents[1]
+    truths = truths_of()
+    images, ocr = source_files(cfg.RAW_DOCS_ROOT, cfg.OCR_DOCS_ROOT, cfg.DOC_KEY_REGEX)
+    docs = choose(truths, sorted(raw)[:N_DOCS], 4, 4, seed=5)
+    out = tmp_path / "sh"
+    build(out, docs, truths, load_pipeline_csv(cfg.PIPELINE_OUTPUT_CSV), cfg.PIPELINE_OUTPUT_CSV, GT,
+          images, ocr, seed=5, max_ops=2)
+    conf = out / "config_shuffled.py"
+    conf.write_text(CONFIG_TEMPLATE.format(main=root / "tests" / "config_test.py", root=out, this=conf),
+                    encoding="utf-8")
+    env = {**__import__("os").environ, "SEQ_CONFIG": str(conf)}
+    py = sys.executable
+    run = lambda *a: subprocess.run([py, str(root / "scripts" / a[0]), *a[1:]], env=env, capture_output=True,
+                                    text=True, cwd=root)
+    r = run("import_ocr.py")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"done: {len(docs)} imported, 0 failed" in r.stdout
+    r = run("evaluate.py", "--method", "v1_csv")
+    assert r.returncode != 0 and "shuffle test" in (r.stdout + r.stderr)
+    r = run("evaluate.py", "--method", "scan", "--set-aside", "truth")
+    assert r.returncode == 0, r.stdout + r.stderr
+    summary = json.loads(r.stdout[r.stdout.index("{"):r.stdout.rindex("}") + 1])
+    assert summary["charts"] == len(docs) and summary["failed_charts"] == 0
+    assert summary["perfect_charts"] < 1.0  # the shuffle broke scan order

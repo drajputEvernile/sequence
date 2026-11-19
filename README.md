@@ -22,7 +22,7 @@ Rebuild it with `python docs/build_pdf.py`.
 python -m venv .venv
 .venv\Scripts\activate            (Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-python -m pytest -q tests         # 88 tests, including the pipeline's own v1 tests
+python -m pytest -q tests         # 96 tests, including the pipeline's own v1 tests
 ```
 
 ## On the training machine
@@ -48,6 +48,27 @@ python scripts/evaluate.py --method v1      # v1's engines re-run here
 python scripts/train_v2.py
 python scripts/evaluate.py --method v2
 python scripts/evaluate.py --method v2 --oracle-junk   # ordering alone, without blank/junk errors
+```
+
+## Shuffle test (can the sequencer fix an order?)
+
+Most real documents are already in scan order, so their scores say little about repairing one.
+`make_shuffle_test.py` copies a random sample (default 100 documents, more than 3 Main pages)
+to a separate folder, renames pages there to put them out of order (swaps, moved pages, moved
+blocks, reversed blocks) and records every renaming in `shuffle_manifest.json`. The originals
+are only read. Pipeline values computed from the original order (`seq`, `document_seq`,
+document-level type / DOS / confidences ...) are blanked in the copy so they cannot give the
+answer away.
+
+```
+python scripts\make_shuffle_test.py                      # --count 100 --min-pages 4 --max-ops 3 --seed 2026
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_test\config_shuffled.py"
+python scripts\import_ocr.py
+python scripts\evaluate.py --method scan                 # how much the shuffle broke
+python scripts\evaluate.py --method v1                   # what the current sequencer repairs
+python scripts\evaluate.py --method scan --set-aside truth   # the same, ordering alone
+python scripts\evaluate.py --method v1 --set-aside truth
+Remove-Item Env:SEQ_CONFIG                                # back to the real data
 ```
 
 Each evaluation writes `summary.json`, `per_chart.csv` and `errors.txt` under `OUTPUT_ROOT/eval/`.

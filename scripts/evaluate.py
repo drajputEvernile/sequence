@@ -67,6 +67,9 @@ def main() -> int:
                     help="which pages are set aside (J series)")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
+    if args.method == "v1_csv" and getattr(cfg, "SHUFFLE_TEST", False):
+        raise SystemExit("v1_csv is production's answer for the original order: on a shuffle test use "
+                         "--method scan / v1 / v2")
     if args.method == "v1_csv" and args.set_aside != "pipeline":
         raise SystemExit("v1_csv is production's own answer; use --method scan / v1 / v2 with --set-aside")
     setaside_model = None
