@@ -30,7 +30,7 @@ from seqlib.settings import cfg
 from seqlib.v1.runner import run_scan_order, run_v1, run_v1_csv
 
 
-def build_method(name: str, documents: str, oracle: bool):
+def build_method(name: str, documents: str, oracle: bool, v2_start: str = "scan"):
     if name == "scan":
         return lambda chart, truth: run_scan_order(chart)
     if name == "v1":
@@ -44,7 +44,8 @@ def build_method(name: str, documents: str, oracle: bool):
 
         scorer = PairScorer.load(cfg.V2_MODEL_PATH)
         embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
-        return lambda chart, truth: run_v2(chart, scorer, embedder, truth.main_order if oracle else None)
+        return lambda chart, truth: run_v2(chart, scorer, embedder, truth.main_order if oracle else None,
+                                           start=v2_start)
     raise SystemExit(f"unknown method {name}")
 
 
@@ -65,6 +66,8 @@ def main() -> int:
                     help="v2: order the truth's Main pages, so blank / junk errors do not count")
     ap.add_argument("--set-aside", choices=("pipeline", "model", "truth"), default="pipeline",
                     help="which pages are set aside (J series)")
+    ap.add_argument("--v2-start", choices=("scan", "v1"), default="scan",
+                    help="v2: the order its search begins from (v1 keeps v1's page-number repairs)")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
     if args.method == "v1_csv" and getattr(cfg, "SHUFFLE_TEST", False):
@@ -84,9 +87,13 @@ def main() -> int:
     names = [n for n in names if n in truths and not truths[n].problems()]
     if args.limit:
         names = names[: args.limit]
-    method = build_method(args.method, args.documents, args.oracle_junk)
+    method = build_method(args.method, args.documents, args.oracle_junk, args.v2_start)
 
-    tag = args.method + (f"-{args.documents}" if args.method == "v1" else "") + ("-oracle" if args.oracle_junk else "")         + (f"-setaside_{args.set_aside}" if args.set_aside != "pipeline" else "")
+    tag = (args.method
+           + (f"-{args.documents}" if args.method == "v1" else "")
+           + ("-from_v1" if args.method == "v2" and args.v2_start == "v1" else "")
+           + ("-oracle" if args.oracle_junk else "")
+           + (f"-setaside_{args.set_aside}" if args.set_aside != "pipeline" else ""))
     out = cfg.OUTPUT_ROOT / "eval" / f"{tag}_{args.split}_{datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
     scores, failed, rows = [], {}, []

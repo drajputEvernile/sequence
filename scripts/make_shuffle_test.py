@@ -86,9 +86,11 @@ def main() -> int:
         "documents_by_split": dict(Counter(splits.get(m.doc, "?") for m in made)),
     }
     print(json.dumps(summary, indent=2))
+    then = ("  python scripts\\train_v2.py\n" if args.role == "train" else
+            "  python scripts\\evaluate.py --method scan --set-aside truth\n"
+            "  python scripts\\evaluate.py --method v1 --set-aside truth\n")
     print(f"\n-> {out}\n\nNext:\n  $env:SEQ_CONFIG = \"{config_path}\"\n  python scripts\\import_ocr.py\n"
-          f"  python scripts\\evaluate.py --method scan\n  python scripts\\evaluate.py --method v1\n"
-          f"  Remove-Item Env:SEQ_CONFIG")
+          f"{then}  Remove-Item Env:SEQ_CONFIG")
     return 0
 
 

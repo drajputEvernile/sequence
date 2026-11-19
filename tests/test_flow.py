@@ -351,3 +351,56 @@ def test_shuffle_report_finds_latest_evaluations(tmp_path):
         (tmp_path / "eval" / name / "per_chart.csv").write_text("chart\n", encoding="utf-8")
     found = mod.latest_evals(tmp_path)
     assert found["scan"].name.endswith("110000") and "v1-csv-setaside_truth" in found
+
+
+def test_decoder_can_start_from_a_given_order():
+    from seqlib.v2.decode import decode
+
+    n = 14
+    truth = [2, 1, *range(3, n + 1)]
+    full = [0, *truth, 0]
+    probs = {(a, b): 0.4 for a in range(n + 1) for b in range(n + 1) if a != b}
+    probs.update({(a, b): 0.6 for a, b in zip(full, full[1:])})
+    assert decode(n, probs, start=truth) == truth
+    assert decode(n, probs, start=[1, 2]) == decode(n, probs)  # an invalid start falls back to scan
+
+
+def test_v2_from_v1_and_diagnose_run(raw, tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from seqlib.eval.inventory import source_files
+    from seqlib.eval.shuffle import CONFIG_TEMPLATE, build, choose
+    from seqlib.io.chart import load_chart
+    from seqlib.io.pipeline_csv import load_pipeline_csv
+    from seqlib.v2.model import train
+    from seqlib.v2.runner import run_v2
+
+    truths = truths_of()
+    keys = sorted(raw)[:N_DOCS]
+    scorer = train((load_chart(k), truths[k]) for k in keys[:7])
+    scorer.save(cfg.V2_MODEL_PATH)
+    for key in keys[7:]:
+        r = run_v2(load_chart(key), scorer, pages=truths[key].main_order, start="v1")
+        assert sorted(r.main_order) == sorted(truths[key].main_order) and r.method == "v2:v1"
+
+    root = Path(__file__).resolve().parents[1]
+    images, ocr = source_files(cfg.RAW_DOCS_ROOT, cfg.OCR_DOCS_ROOT, cfg.DOC_KEY_REGEX)
+    out = tmp_path / "sh"
+    build(out, choose(truths, keys, 4, 4, seed=9), truths, load_pipeline_csv(cfg.PIPELINE_OUTPUT_CSV),
+          cfg.PIPELINE_OUTPUT_CSV, GT, images, ocr, seed=9, max_ops=2)
+    conf = out / "config_shuffled.py"
+    conf.write_text(CONFIG_TEMPLATE.format(main=root / "tests" / "config_test.py", root=out, this=conf), encoding="utf-8")
+    env = {**__import__("os").environ, "SEQ_CONFIG": str(conf)}
+    run = lambda *a: subprocess.run([sys.executable, str(root / "scripts" / a[0]), *a[1:]], env=env,
+                                    capture_output=True, text=True, cwd=root)
+    assert run("import_ocr.py").returncode == 0
+    r = run("diagnose_v2.py", "--importance-rows", "2000")
+    assert r.returncode == 0, r.stdout + r.stderr
+    report = json.loads((out / "outputs" / "diagnose_v2.json").read_text(encoding="utf-8"))
+    assert report["documents"] == 4 and sum(report["model or search"].values()) == 4
+    assert report["importance (drop in average precision when shuffled)"]
+    r = run("evaluate.py", "--method", "v2", "--v2-start", "v1", "--set-aside", "truth")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert any(d.name.startswith("v2-from_v1-setaside_truth_test_") for d in (out / "outputs" / "eval").iterdir())

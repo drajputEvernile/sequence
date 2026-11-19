@@ -127,11 +127,15 @@ def local_search(cost: np.ndarray, start: Sequence[int], max_block: int = 40, ma
     return order
 
 
-def decode(n: int, probs: dict[tuple[int, int], float], max_block: int = 40) -> list[int]:
-    """Best order of nodes 1..n (scan order = 1..n)."""
+def decode(n: int, probs: dict[tuple[int, int], float], max_block: int = 40,
+           start: list[int] | None = None) -> list[int]:
+    """Best order of nodes 1..n (scan order = 1..n). ``start``: where the local search begins
+    (default the scan order; e.g. v1's order, so its page-number repairs are kept unless the
+    model finds a better order)."""
     if n == 0:
         return []
     cost = cost_matrix(n, probs)
     if n <= EXACT_MAX:
         return held_karp(cost)
-    return local_search(cost, list(range(1, n + 1)), max_block=max_block)
+    begin = list(start) if start and sorted(start) == list(range(1, n + 1)) else list(range(1, n + 1))
+    return local_search(cost, begin, max_block=max_block)
