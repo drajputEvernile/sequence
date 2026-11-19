@@ -30,7 +30,7 @@ from seqlib.settings import cfg
 from seqlib.v1.runner import run_scan_order, run_v1, run_v1_csv
 
 
-def build_method(name: str, documents: str, oracle: bool, v2_start: str = "scan"):
+def build_method(name: str, documents: str, oracle: bool, v2_start: str = "scan", margin=None, solver=None):
     if name == "scan":
         return lambda chart, truth: run_scan_order(chart)
     if name == "v1":
@@ -46,6 +46,19 @@ def build_method(name: str, documents: str, oracle: bool, v2_start: str = "scan"
         embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
         return lambda chart, truth: run_v2(chart, scorer, embedder, truth.main_order if oracle else None,
                                            start=v2_start)
+    if name in ("v3", "v4", "v5", "v6"):
+        from seqlib.ladder import load_seam, model_path
+        from seqlib.v2.features import Embedder
+        from seqlib.v3.model import V3Model
+        from seqlib.v3.runner import run_v3
+
+        model = V3Model.load(model_path(name))
+        seam = load_seam(required=True) if "seam" in model.settings.groups else None
+        print(f"{name}: margin {model.margin if margin is None else margin}, solver {solver or model.settings.solver}, "
+              f"evidence {list(model.settings.groups) or 'base'}, anchors {model.settings.anchors}")
+        embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
+        return lambda chart, truth: run_v3(chart, model, embedder, truth.main_order if oracle else None,
+                                           margin=margin, solver=solver, seam=seam)
     raise SystemExit(f"unknown method {name}")
 
 
@@ -58,7 +71,7 @@ def set_aside_by_truth(chart, truth) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--method", required=True, choices=("scan", "v1", "v1_csv", "v2"))
+    ap.add_argument("--method", required=True, choices=("scan", "v1", "v1_csv", "v2", "v3", "v4", "v5", "v6"))
     ap.add_argument("--split", choices=("test", "train", "all"), default="test")
     ap.add_argument("--documents", choices=("csv", "recompute"), default="csv",
                     help="v1: where its continuity documents come from")
@@ -68,6 +81,8 @@ def main() -> int:
                     help="which pages are set aside (J series)")
     ap.add_argument("--v2-start", choices=("scan", "v1"), default="scan",
                     help="v2: the order its search begins from (v1 keeps v1's page-number repairs)")
+    ap.add_argument("--margin", type=float, default=None, help="v3-v6: override the trained move margin")
+    ap.add_argument("--solver", choices=("search", "cover"), default=None, help="v3-v6: override the solver")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
     if args.method == "v1_csv" and getattr(cfg, "SHUFFLE_TEST", False):
@@ -87,11 +102,13 @@ def main() -> int:
     names = [n for n in names if n in truths and not truths[n].problems()]
     if args.limit:
         names = names[: args.limit]
-    method = build_method(args.method, args.documents, args.oracle_junk, args.v2_start)
+    method = build_method(args.method, args.documents, args.oracle_junk, args.v2_start, args.margin, args.solver)
 
     tag = (args.method
            + (f"-{args.documents}" if args.method == "v1" else "")
            + ("-from_v1" if args.method == "v2" and args.v2_start == "v1" else "")
+           + (f"-m{args.margin:g}" if args.method in ("v3", "v4", "v5", "v6") and args.margin is not None else "")
+           + (f"-{args.solver}" if args.method in ("v3", "v4", "v5", "v6") and args.solver else "")
            + ("-oracle" if args.oracle_junk else "")
            + (f"-setaside_{args.set_aside}" if args.set_aside != "pipeline" else ""))
     out = cfg.OUTPUT_ROOT / "eval" / f"{tag}_{args.split}_{datetime.now():%Y%m%d-%H%M%S}"

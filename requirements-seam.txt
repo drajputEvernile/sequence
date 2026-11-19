@@ -1,0 +1,5 @@
+# Only for v6's seam cross-encoder (scripts/train_seam.py, and evaluating v6). On a GPU machine
+# install the CUDA build of torch from pytorch.org instead of the plain one.
+-r requirements.txt
+torch>=2.4
+transformers>=4.44

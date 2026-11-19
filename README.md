@@ -22,7 +22,7 @@ Rebuild it with `python docs/build_pdf.py`.
 python -m venv .venv
 .venv\Scripts\activate            (Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-python -m pytest -q tests         # 98 tests, including the pipeline's own v1 tests
+python -m pytest -q tests         # 110 tests, including the pipeline's own v1 tests
 ```
 
 ## On the training machine
@@ -95,6 +95,22 @@ python scripts\shuffle_report.py               # by kind of damage and document 
 
 Remove-Item Env:SEQ_CONFIG
 python scripts\evaluate.py --method v2 --set-aside truth   # no harm on the real test documents (scan: 98.7%)
+```
+
+## v3 and the experiment ladder
+
+See `docs/EXPERIMENTS.md` (versions v3 to v6 mapped to the team's design document).
+
+```
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_train\config_shuffled.py"
+python scripts\train_v3.py                       # tunes the move margin on held-out training documents
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_eval\config_shuffled.py"
+python scripts\evaluate.py --method v3 --set-aside truth
+python scripts\evaluate.py --method v3 --solver cover --set-aside truth
+python scripts\diagnose_v2.py --version v3
+Remove-Item Env:SEQ_CONFIG
+python scripts\evaluate.py --method v3 --set-aside truth          # no harm
+python scripts\compare.py                                          # everything side by side
 ```
 
 Each evaluation writes `summary.json`, `per_chart.csv` and `errors.txt` under `OUTPUT_ROOT/eval/`.

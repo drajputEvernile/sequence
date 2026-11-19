@@ -20,7 +20,7 @@ def main() -> int:
 
     print(f"config: {cfg.__file__}\n")
     for key in ("RAW_DOCS_ROOT", "OCR_DOCS_ROOT", "PIPELINE_OUTPUT_CSV", "GROUND_TRUTH_PATH", "CHARTS_ROOT",
-                "SPLIT_FILE", "SETASIDE_MODEL_PATH", "V2_MODEL_PATH", "EMBEDDING_MODEL_PATH", "V1_CANON_DIR", "TESSERACT_CMD", "OUTPUT_ROOT"):
+                "SPLIT_FILE", "SETASIDE_MODEL_PATH", "V2_MODEL_PATH", "V3_MODEL_PATH", "LADDER_MODEL_DIR", "SEAM_BASE_MODEL_PATH", "SEAM_MODEL_PATH", "EMBEDDING_MODEL_PATH", "V1_CANON_DIR", "TESSERACT_CMD", "OUTPUT_ROOT"):
         value = getattr(cfg, key, None)
         state = "-" if value is None else ("ok" if value.exists() else "MISSING")
         print(f"  {key:22} {state:8} {value}")

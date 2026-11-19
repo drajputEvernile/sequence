@@ -404,3 +404,44 @@ def test_v2_from_v1_and_diagnose_run(raw, tmp_path):
     r = run("evaluate.py", "--method", "v2", "--v2-start", "v1", "--set-aside", "truth")
     assert r.returncode == 0, r.stdout + r.stderr
     assert any(d.name.startswith("v2-from_v1-setaside_truth_test_") for d in (out / "outputs" / "eval").iterdir())
+
+
+def test_v3_costs_add_the_margin_off_the_scan_order():
+    import numpy as np
+
+    from seqlib.v3.solve import decode_v3, v3_costs
+
+    n = 15
+    probs = {(a, b): 0.5 for a in range(n + 1) for b in range(n + 1) if a != b}
+    cost = v3_costs(n, probs, 1.0)
+    assert np.isclose(cost[3, 4], -np.log(0.5)) and np.isclose(cost[3, 5], -np.log(0.5) + 1.0)
+    assert np.isclose(cost[0, 1], -np.log(0.5)) and np.isclose(cost[n, 0], -np.log(0.5))
+    # with flat evidence the margin keeps scan order, whatever the solver
+    for solver in ("search", "cover"):
+        assert decode_v3(n, probs, 1.0, solver) == list(range(1, n + 1))
+    # strong evidence for a moved block beats the margin
+    truth = [*range(8, 16), *range(1, 8)]
+    full = [0, *truth, 0]
+    strong = {k: 0.05 for k in probs}
+    strong.update({(a, b): 0.95 for a, b in zip(full, full[1:])})
+    for solver in ("search", "cover"):
+        assert decode_v3(n, strong, 0.5, solver) == truth
+
+
+def test_v3_trains_tunes_and_runs(raw):
+    from seqlib.io.chart import load_chart
+    from seqlib.v3.model import SCAN_FEATURES, V3Model, V3Settings, train
+    from seqlib.v3.runner import run_v3
+
+    truths = truths_of()
+    keys = sorted(raw)[:N_DOCS]
+    model = train(((load_chart(k), truths[k]) for k in keys[:8]), V3Settings(margins=(0.0, 1.0, 3.0)))
+    assert not SCAN_FEATURES & set(model.features)  # no scan input reaches the evidence model
+    rep = model.report
+    assert [p["margin"] for p in rep["margin_curve"]] == [0.0, 1.0, 3.0] and rep["chosen_margin"] in (0.0, 1.0, 3.0)
+    model.save(cfg.V3_MODEL_PATH)
+    model = V3Model.load(cfg.V3_MODEL_PATH)
+    for key in keys[8:]:
+        for solver in ("search", "cover"):
+            r = run_v3(load_chart(key), model, pages=truths[key].main_order, solver=solver)
+            assert sorted(r.main_order) == sorted(truths[key].main_order)

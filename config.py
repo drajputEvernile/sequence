@@ -94,6 +94,15 @@ SPLIT_SEED = 13
 # 4. Sequencing models
 # =============================================================================================
 V2_MODEL_PATH = REPO / "models" / "v2" / "v2_pair_scorer.joblib"
+# v3: evidence model with no scan inputs + the tuned move margin (scripts/train_v3.py).
+V3_MODEL_PATH = REPO / "models" / "v3" / "v3_model.joblib"
+# v4, v5, v6 (scripts/train_ladder.py): LADDER_MODEL_DIR\<version>\model.joblib.
+LADDER_MODEL_DIR = REPO / "models"
+# v6's seam cross-encoder (scripts/train_seam.py). SEAM_BASE_MODEL_PATH: a local copy of a small
+# pre-trained model to fine-tune, e.g. sentence-transformers/all-MiniLM-L6-v2 (None = not set).
+SEAM_BASE_MODEL_PATH = None
+SEAM_MODEL_PATH = REPO / "models" / "seam"
+SEAM_DEVICE = "cpu"              # "cuda" on the GPU machine
 # Which pages are set aside (blank / junk / duplicate -> J series), learned from the truth
 # (scripts/train_setaside.py; used by evaluate.py --set-aside model).
 SETASIDE_MODEL_PATH = REPO / "models" / "setaside" / "setaside_model.joblib"

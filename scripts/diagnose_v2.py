@@ -1,4 +1,4 @@
-"""Why does v2 not repair an order: the pair model, or the search? (run with a shuffle set's config)
+"""Why does v2 / v3 not repair an order: the pair model, or the search? (run with a shuffle set's config)
 
 For every test document (the truth's Main pages, so blank / junk play no part):
 
@@ -13,7 +13,8 @@ For every test document (the truth's Main pages, so blank / junk play no part):
 3. **What it leans on.** Permutation importance of the inputs on the test pairs.
 
     $env:SEQ_CONFIG = "<repo>\\workspace\\shuffle_eval\\config_shuffled.py"
-    python scripts\\diagnose_v2.py
+    python scripts\\diagnose_v2.py                  # v2
+    python scripts\\diagnose_v2.py --version v3     # v3 (evidence model + move margin)
 
 Writes <OUTPUT_ROOT>/diagnose_v2.json. Scores and counts only -- safe to bring back.
 """
@@ -42,8 +43,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--split", choices=("test", "train"), default="test")
     ap.add_argument("--importance-rows", type=int, default=60000, help="pairs sampled for the importance")
+    ap.add_argument("--version", choices=("v2", "v3"), default="v2")
     args = ap.parse_args()
-    scorer = PairScorer.load(cfg.V2_MODEL_PATH)
+    if args.version == "v3":
+        from seqlib.v3.model import EVIDENCE, V3Model, chart_pairs
+        from seqlib.v3.solve import decode_v3, v3_costs
+
+        v3 = V3Model.load(cfg.V3_MODEL_PATH)
+    else:
+        scorer = PairScorer.load(cfg.V2_MODEL_PATH)
     truths = load_ground_truth(cfg.GROUND_TRUTH_PATH)
     names = [n for n in read_split(cfg.SPLIT_FILE)[args.split] if n in truths and not truths[n].problems()]
 
@@ -62,12 +70,22 @@ def main() -> int:
         pages = truth.main_order
         if len(pages) < 2:
             continue
-        scored = score_pairs(chart, scorer, pages)
-        n = len(scored.features.pages)
-        node = scored.node
-        cost = cost_matrix(n, scored.edge)
+        if args.version == "v3":
+            rows = chart_pairs(chart, pages, v3.settings)
+            probs = v3.evidence.predict(rows.X)
+            n = len(rows.cf.pages)
+            node = {pg.page_number: k + 1 for k, pg in enumerate(rows.cf.pages)}
+            node[-1] = 0
+            edge = {(node[a], node[b]): float(pr) for (a, b), pr in zip(rows.pairs, probs)}
+            cost = v3_costs(n, edge, v3.margin)
+            decoded = decode_v3(n, edge, v3.margin, v3.settings.solver)
+        else:
+            scored = score_pairs(chart, scorer, pages)
+            n = len(scored.features.pages)
+            node, edge = scored.node, scored.edge
+            cost = cost_matrix(n, edge)
+            decoded = decode(n, edge, max_block=scorer.settings.max_block)
         truth_nodes = [node[p] for p in pages]
-        decoded = decode(n, scored.edge, max_block=scorer.settings.max_block)
         c_truth, c_dec = path_cost(truth_nodes, cost), path_cost(decoded, cost)
         gaps.append(c_dec - c_truth)
         if decoded == truth_nodes:
@@ -79,7 +97,7 @@ def main() -> int:
 
         # the pair model on its own
         out_edges: dict[int, list[tuple[float, int]]] = {}
-        for (a, b), p in scored.edge.items():
+        for (a, b), p in edge.items():
             out_edges.setdefault(a, []).append((p, b))
         full = [0, *truth_nodes, 0]
         for a, b in zip(full, full[1:]):
@@ -94,18 +112,24 @@ def main() -> int:
             first_choice[kind][0] += int(best == b)
             first_choice[kind][1] += 1
             if kind == "moved away by the shuffle":
-                p_true_moved.append(scored.edge.get((a, b), 0.0))
+                p_true_moved.append(edge.get((a, b), 0.0))
                 if a + 1 <= n:
-                    p_scan_moved.append(scored.edge.get((a, a + 1), 0.0))
+                    p_scan_moved.append(edge.get((a, a + 1), 0.0))
 
         # pairs for the importance
-        cf = scored.features
-        pairs = candidates(cf, scorer.settings.window, scorer.settings.top_k)
         positives = true_pairs(pages)
-        X_all.append(pair_matrix(cf, pairs))
-        y_all.append(np.array([p in positives for p in pairs], dtype=np.int8))
+        if args.version == "v3":
+            X_all.append(rows.X)
+            y_all.append(np.array([p in positives for p in rows.pairs], dtype=np.int8))
+        else:
+            cf = scored.features
+            pairs = candidates(cf, scorer.settings.window, scorer.settings.top_k)
+            X_all.append(pair_matrix(cf, pairs))
+            y_all.append(np.array([p in positives for p in pairs], dtype=np.int8))
 
     report = {
+        "version": args.version,
+        **({"margin": v3.margin, "solver": v3.settings.solver} if args.version == "v3" else {}),
         "documents": sum(verdicts.values()),
         "model or search": verdicts,
         "median cost gap (decoded - truth; < 0 = model prefers the decoded order)":
@@ -128,13 +152,16 @@ def main() -> int:
         if len(y) > args.importance_rows:
             keep = rng.choice(len(y), args.importance_rows, replace=False)
             X, y = X[keep], y[keep]
-        active = scorer.active
-        result = permutation_importance(scorer.model, X[:, active], y, n_repeats=3, random_state=0,
+        if args.version == "v3":
+            model, active, names = v3.evidence.model, v3.evidence.active, EVIDENCE
+        else:
+            model, active, names = scorer.model, scorer.active, FEATURES
+        result = permutation_importance(model, X[:, active], y, n_repeats=3, random_state=0,
                                         scoring="average_precision")
         order = np.argsort(-result.importances_mean)[:20]
         report["importance (drop in average precision when shuffled)"] = [
-            (FEATURES[active[i]], round(float(result.importances_mean[i]), 4)) for i in order]
-    out = cfg.OUTPUT_ROOT / "diagnose_v2.json"
+            (names[active[i]], round(float(result.importances_mean[i]), 4)) for i in order]
+    out = cfg.OUTPUT_ROOT / f"diagnose_{args.version}.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     print(f"-> {out}")
