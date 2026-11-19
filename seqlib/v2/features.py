@@ -42,9 +42,6 @@ FEATURES = (
     "a_signed_tail", "a_signed", "b_title", "b_visit_heading",
     "same_visit_id",
     "same_doc_v1", "doc_delta_v1",
-    # the pipeline outputs CSV: the document's agreed type, whether the pipeline carried b's type
-    # from the page before (continuation), the encounter type
-    "same_doc_type", "b_type_continued", "a_type_continued", "same_encounter",
     "a_fill", "a_words", "b_words",
     "a_rel_pos", "b_rel_pos", "n_pages",
     "emb_tail_head",
@@ -70,9 +67,6 @@ class PageInfo:
     starts_lower: bool
     says_cont: bool
     doc_v1: Optional[int]
-    doc_type: str = ""
-    type_continued: Optional[bool] = None
-    encounter: str = ""
 
 
 @dataclass
@@ -115,13 +109,36 @@ def _cosines(left: Sequence[str], right: Sequence[str], analyzer: str, ngram: tu
     return (matrix[:n] @ matrix[n:].T).toarray()
 
 
+def order_free(chart: Chart) -> Chart:
+    """A copy of ``chart`` whose pipeline rows lack every value computed from the page order
+    (seqlib.eval.shuffle.ORDER_DEPENDENT: document_seq, seq, the document's agreed type / DOS /
+    confidences ...). v2 reads only per-page values, so it sees the same kind of input whatever
+    order the pages came in -- on real data, on a shuffle test, and in production."""
+    import copy
+
+    from seqlib.eval.shuffle import strip_order_dependent
+
+    pages = []
+    for page in chart.pages:
+        clone = copy.copy(page)
+        clone.rows = dict(page.rows)
+        if page.pipeline:
+            clone.rows["pipeline"] = strip_order_dependent(page.pipeline)
+        pages.append(clone)
+    out = copy.copy(chart)
+    out.pages = pages
+    return out
+
+
 def page_infos(chart: Chart, pages: Optional[Sequence[int]] = None) -> list[PageInfo]:
     """Per-page facts for the pages to order (default: the pipeline's Main pages)."""
+    chart = order_free(chart)
     rules = load_rules()
     inputs = continuity_inputs(chart)
     try:
-        # the pipeline's documents (outputs CSV document_seq); the ported engine without them
-        docs = documents(chart, "csv")
+        # documents as v1's continuity groups the pages in the order given (document_seq is
+        # order-dependent, so it is not read)
+        docs = documents(chart, "recompute")
     except Exception:  # noqa: BLE001 - v1 grouping is one feature among many
         docs = {}
     by_number = {i.page_number: i for i in inputs}
@@ -159,19 +176,8 @@ def page_infos(chart: Chart, pages: Optional[Sequence[int]] = None) -> list[Page
             starts_lower=bool(body_lines) and starts_mid_thought(body_lines[0].raw),
             says_cont=says_continued((body_text or [l.text for l in inp.lines])[-2:]),
             doc_v1=docs.get(number),
-            **_pipeline_facts(chart.by_number().get(number)),
         ))
     return out
-
-
-def _pipeline_facts(page) -> dict:
-    row = page.pipeline if page is not None else {}
-    if not row:
-        return {}
-    source = str(row.get("page_type_source") or "").strip().lower()
-    return {"doc_type": str(row.get("page_type") or ""),
-            "type_continued": (source == "continuation") if source else None,
-            "encounter": str(row.get("encounter_type") or "")}
 
 
 def chart_features(chart: Chart, pages: Optional[Sequence[int]] = None, embedder=None) -> ChartFeatures:
@@ -304,14 +310,7 @@ def pair_matrix(cf: ChartFeatures, pairs: Sequence[tuple[int, int]]) -> np.ndarr
             x[col["doc_delta_v1"]] = max(-20, min(20, b.doc_v1 - a.doc_v1))
         if cf.emb_sim is not None:
             x[col["emb_tail_head"]] = cf.emb_sim[ia, ib]
-        if a.doc_type and b.doc_type:
-            x[col["same_doc_type"]] = a.doc_type == b.doc_type
-        if b.type_continued is not None:
-            x[col["b_type_continued"]] = b.type_continued
-        if a.type_continued is not None:
-            x[col["a_type_continued"]] = a.type_continued
-        if a.encounter and b.encounter:
-            x[col["same_encounter"]] = a.encounter == b.encounter
+
     return rows
 
 

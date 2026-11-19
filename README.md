@@ -22,7 +22,7 @@ Rebuild it with `python docs/build_pdf.py`.
 python -m venv .venv
 .venv\Scripts\activate            (Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-python -m pytest -q tests         # 96 tests, including the pipeline's own v1 tests
+python -m pytest -q tests         # 98 tests, including the pipeline's own v1 tests
 ```
 
 ## On the training machine
@@ -69,6 +69,32 @@ python scripts\evaluate.py --method v1                   # what the current sequ
 python scripts\evaluate.py --method scan --set-aside truth   # the same, ordering alone
 python scripts\evaluate.py --method v1 --set-aside truth
 Remove-Item Env:SEQ_CONFIG                                # back to the real data
+```
+
+## Training and testing v2 on shuffles
+
+v2 reads only per-page values (never the pipeline's order-dependent columns), so it sees the same
+kind of input on real data, on a shuffle set and in production. Train it on shuffled *train*
+documents, score it on shuffled *test* documents, and check it does no harm on the real ones:
+
+```
+Remove-Item Env:SEQ_CONFIG -ErrorAction SilentlyContinue
+python scripts\make_shuffle_test.py --from train --role train --min-pages 2 --unchanged 0.3 --count 1000 --out workspace\shuffle_train
+python scripts\make_shuffle_test.py --from test --role test --count 1000 --out workspace\shuffle_eval
+
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_train\config_shuffled.py"
+python scripts\import_ocr.py
+python scripts\train_v2.py                     # the model goes to the main config's V2_MODEL_PATH
+
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_eval\config_shuffled.py"
+python scripts\import_ocr.py
+python scripts\evaluate.py --method scan --set-aside truth
+python scripts\evaluate.py --method v1 --set-aside truth
+python scripts\evaluate.py --method v2 --set-aside truth
+python scripts\shuffle_report.py               # by kind of damage and document size
+
+Remove-Item Env:SEQ_CONFIG
+python scripts\evaluate.py --method v2 --set-aside truth   # no harm on the real test documents (scan: 98.7%)
 ```
 
 Each evaluation writes `summary.json`, `per_chart.csv` and `errors.txt` under `OUTPUT_ROOT/eval/`.

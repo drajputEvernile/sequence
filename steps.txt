@@ -1,0 +1,18 @@
+Remove-Item Env:SEQ_CONFIG -ErrorAction SilentlyContinue
+
+python scripts\make_shuffle_test.py --from train --role train --min-pages 2 --unchanged 0.3 --count 1000 --out workspace\shuffle_train
+python scripts\make_shuffle_test.py --from test --role test --count 1000 --out workspace\shuffle_eval
+
+$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_train\config_shuffled.py"
+python scripts\import_ocr.py
+python scripts\train_v2.py
+
+$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_eval\config_shuffled.py"
+python scripts\import_ocr.py
+python scripts\evaluate.py --method scan --set-aside truth
+python scripts\evaluate.py --method v1 --set-aside truth
+python scripts\evaluate.py --method v2 --set-aside truth
+python scripts\shuffle_report.py
+
+Remove-Item Env:SEQ_CONFIG
+python scripts\evaluate.py --method v2 --set-aside truth

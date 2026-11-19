@@ -143,7 +143,7 @@ def test_v2_trains_on_pipeline_features(raw):
     keys = sorted(raw)[:N_DOCS]
     scorer = train((load_chart(k), truths[k]) for k in keys[:7])
     used = {FEATURES[i] for i in scorer.active}
-    assert {"same_doc_v1", "b_type_continued"} & used
+    assert used and not {"same_doc_type", "b_type_continued"} & set(FEATURES)  # order-dependent: not read
     for key in keys[7:]:
         result = run_v2(load_chart(key), scorer)
         assert sorted(result.main_order) == sorted(truths[key].main_order)
@@ -323,3 +323,31 @@ def test_shuffle_test_end_to_end_with_its_config(raw, tmp_path):
     summary = json.loads(r.stdout[r.stdout.index("{"):r.stdout.rindex("}") + 1])
     assert summary["charts"] == len(docs) and summary["failed_charts"] == 0
     assert summary["perfect_charts"] < 1.0  # the shuffle broke scan order
+
+
+def test_v2_reads_no_order_dependent_value(raw):
+    from seqlib.io.chart import load_chart
+    from seqlib.v2.features import order_free
+
+    chart = load_chart(sorted(raw)[0])
+    assert any(p.pipeline.get("document_seq") for p in chart.pages)
+    free = order_free(chart)
+    assert all(not p.pipeline.get("document_seq") and not p.pipeline.get("seq") for p in free.pages)
+    assert any(p.pipeline.get("document_seq") for p in chart.pages)  # the original is untouched
+
+
+def test_shuffle_report_finds_latest_evaluations(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts"))
+    spec = importlib.util.spec_from_file_location("shuffle_report", root / "scripts" / "shuffle_report.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for name in ("scan_test_20261119-100000", "scan_test_20261119-110000", "v1-csv-setaside_truth_test_20261119-090000"):
+        (tmp_path / "eval" / name).mkdir(parents=True)
+        (tmp_path / "eval" / name / "per_chart.csv").write_text("chart\n", encoding="utf-8")
+    found = mod.latest_evals(tmp_path)
+    assert found["scan"].name.endswith("110000") and "v1-csv-setaside_truth" in found

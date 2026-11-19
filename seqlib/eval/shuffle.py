@@ -171,6 +171,7 @@ def build(
     out_root: Path, docs: list[str], truths: dict[str, ChartTruth], pipeline_rows: dict[str, dict[int, dict]],
     pipeline_csv_path: Path, truth_csv_path: Path, images: dict[str, list[Path]], ocr: dict[str, list[Path]],
     seed: int, max_ops: int, unchanged_share: float = 0.0, splits: Optional[dict[str, str]] = None,
+    role: str = "test",
 ) -> list[ShuffledDoc]:
     out_root = Path(out_root)
     if out_root.exists() and any(out_root.iterdir()):
@@ -240,9 +241,11 @@ def build(
         ],
     }
     (out_root / "shuffle_manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    names = sorted(by_doc)
     (out_root / "split.json").write_text(json.dumps(
-        {"train": [], "test": sorted(by_doc), "excluded": {}, "strata": {"shuffled": len(made)},
-         "note": "shuffle test: every document is a test document"}, indent=1), encoding="utf-8")
+        {"train": names if role == "train" else [], "test": names if role == "test" else [], "excluded": {},
+         "strata": {"shuffled": len(made)}, "role": role,
+         "note": f"shuffle set: every document is a {role} document"}, indent=1), encoding="utf-8")
     return made
 
 

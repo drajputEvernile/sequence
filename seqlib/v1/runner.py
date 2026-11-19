@@ -112,8 +112,12 @@ def page_type_of(page: Page) -> tuple[str, str, tuple[str, ...], Optional[float]
 
 
 def page_dos(page: Page) -> tuple[str, str]:
-    """(from, to) ISO dates: the outputs CSV's (the document's DOS), else the DOS CSV's."""
+    """(from, to) ISO dates of the page itself, as the pipeline's continuity read them: the outputs
+    CSV's when ``dos_source`` is page (a date carried from the document, or from a duplicate's
+    original, is not the page's own), else the DOS CSV's."""
     if page.pipeline:
+        if str(page.pipeline.get("dos_source") or "").strip().lower() in ("document", "duplicate"):
+            return "", ""
         start = pipeline_csv.iso_date(page.pipeline.get("dos_from"))
         return start, (pipeline_csv.iso_date(page.pipeline.get("dos_to")) or start) if start else ""
     return str(page.get("dos", "dos_from_iso", "") or ""), str(page.get("dos", "dos_to_iso", "") or "")
