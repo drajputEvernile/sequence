@@ -34,7 +34,7 @@ def seam_half(names: Sequence[str]) -> set[str]:
 
 
 class SeamScorer:
-    def __init__(self, path: Path, device: str = "cpu", max_length: int = 256, batch: int = 64):
+    def __init__(self, path: Path, device: str = "cpu", max_length: Optional[int] = None, batch: int = 64):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -42,9 +42,11 @@ class SeamScorer:
         self.device = device if (device != "cuda" or torch.cuda.is_available()) else "cpu"
         self.tokenizer = AutoTokenizer.from_pretrained(str(path))
         self.model = AutoModelForSequenceClassification.from_pretrained(str(path)).to(self.device).eval()
-        self.max_length, self.batch = max_length, batch
         meta = Path(path) / META
         self.meta = json.loads(meta.read_text(encoding="utf-8")) if meta.is_file() else {}
+        # score with the input length the model was trained with (shorter = faster on CPU)
+        self.max_length = max_length or int(self.meta.get("max_length") or 256)
+        self.batch = batch
 
     def score(self, left: Sequence[str], right: Sequence[str]) -> np.ndarray:
         out = []
@@ -125,10 +127,18 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model.train()
+    import time
+
+    batches = (len(train_rows) + batch - 1) // batch
+    every = max(1, batches // 20)  # about 20 progress lines per epoch
+    logger.info("seam: %d training pairs (%d held out), %d batches per epoch, %d epochs, input length %d, %s",
+                len(train_rows), len(test_rows), batches, epochs, max_length, device)
+    started = time.time()
+    done = 0
     for epoch in range(epochs):
         rng.shuffle(train_rows)
         total = 0.0
-        for i in range(0, len(train_rows), batch):
+        for k, i in enumerate(range(0, len(train_rows), batch), start=1):
             chunk = train_rows[i:i + batch]
             enc = tokenizer([r[0] for r in chunk], [r[1] for r in chunk], truncation=True, max_length=max_length,
                             padding=True, return_tensors="pt").to(device)
@@ -138,6 +148,13 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
             loss.backward()
             optim.step()
             total += loss.item() * len(chunk)
+            done += 1
+            if k % every == 0 or k == batches:
+                elapsed = time.time() - started
+                left = elapsed / done * (batches * epochs - done)
+                logger.info("seam epoch %d/%d batch %d/%d  loss %.4f  elapsed %dm  about %dm left",
+                            epoch + 1, epochs, k, batches, total / min(len(train_rows), i + len(chunk)),
+                            elapsed // 60, left // 60)
         logger.info("seam epoch %d: loss %.4f", epoch + 1, total / max(1, len(train_rows)))
     model.eval()
     Path(out_path).mkdir(parents=True, exist_ok=True)
