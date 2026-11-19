@@ -1,6 +1,23 @@
-$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_eval\config_shuffled.py"
-python scripts\diagnose_v2.py
-python scripts\evaluate.py --method v2 --v2-start v1 --set-aside truth
+# training set
+$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_train\config_shuffled.py"
+python scripts\train_ladder.py --version v3          # 1
+python scripts\train_ladder.py --version v4          # 2
+python scripts\train_ladder.py --version v5          # 3
+python scripts\train_seam.py                         # 7 (v6 only; GPU: add --device cuda)
+python scripts\train_ladder.py --version v6          # 8 (v6 only)
 
+# shuffled test documents: repair
+$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_eval\config_shuffled.py"
+python scripts\evaluate.py --method v3 --set-aside truth
+python scripts\evaluate.py --method v4 --set-aside truth
+python scripts\evaluate.py --method v5 --set-aside truth
+python scripts\evaluate.py --method v6 --set-aside truth
+
+# real test documents: no harm
 Remove-Item Env:SEQ_CONFIG
-python scripts\evaluate.py --method v2 --v2-start v1 --set-aside truth
+python scripts\evaluate.py --method v3 --set-aside truth
+python scripts\evaluate.py --method v4 --set-aside truth
+python scripts\evaluate.py --method v5 --set-aside truth
+python scripts\evaluate.py --method v6 --set-aside truth
+
+python scripts\compare.py
