@@ -146,3 +146,98 @@ def test_seam_and_v6(data):
     assert model.report["fitted_on_documents"] == 10 - len(half)
     r = run_v3(load_chart(keys[-1]), model, pages=data[keys[-1]].main_order, seam=seam)
     assert sorted(r.main_order) == sorted(data[keys[-1]].main_order)
+
+
+def test_margin_rule_when_no_margin_meets_the_floor(data):
+    from seqlib.io.chart import load_chart
+    from seqlib.ladder import settings_for
+    from seqlib.v3.model import train
+
+    keys = sorted(data)
+    model = train(((load_chart(k), data[k]) for k in keys[:10]),
+                  settings_for("v3", margins=(0.0, 2.0, 6.0), harm_floor=1.01))  # unreachable floor
+    curve = model.report["margin_curve"]
+    key = lambda p: (p["held_out_in_order_successor"] or 0.0, p["held_out_shuffled_successor"] or 0.0)  # noqa: E731
+    chosen = next(p for p in curve if p["margin"] == model.margin)
+    assert key(chosen) == max(key(p) for p in curve)  # the least harm, then the most repair
+    assert model.report["tuned_on_documents"] == 10  # every document, out of fold
+
+
+def test_v7_gate_policy_and_run(data):
+    import numpy as np
+
+    from seqlib.io.chart import load_chart
+    from seqlib.v3.tuning import choose_policy
+    from seqlib.v7 import model_path, settings_for
+    from seqlib.v7.model import GATE_FEATURES, V7Model, train_v7
+    from seqlib.v7.runner import run_v7
+
+    # the policy: when the high margin is best everywhere, nothing gains from the gate
+    succ = np.array([[0.5, 0.9], [0.5, 0.9], [1.0, 1.0], [0.9, 1.0]])  # margins (0, 2): docs x margins
+    p = choose_policy(succ, np.array([0.9, 0.8, 0.1, 0.2]), np.array([False, False, True, True]), (0.0, 2.0),
+                      harm_floor=1.0)
+    assert p["meets_floor"] and (p["repair"], p["in_order"]) == (0.9, 1.0)
+    # ... when the low margin repairs and only harms in-order documents, the gate keeps it off them
+    p = choose_policy(np.array([[1.0, 0.5], [0.9, 1.0]]), np.array([0.9, 0.1]), np.array([False, True]),
+                      (0.0, 2.0), harm_floor=1.0)
+    assert (p["margin_low"], p["margin_high"], p["repair"], p["in_order"]) == (0.0, 2.0, 1.0, 1.0)
+
+    keys = sorted(data)
+    settings = settings_for("v7")
+    model = train_v7(((load_chart(k), data[k]) for k in keys[:10]), settings, folds=3, margins=(0.0, 2.0))
+    assert model.report["tuned_on_documents"] == 10 and len(model.report["margin_curve_out_of_fold"]) == 2
+    path = model_path("v7")
+    model.save(path)
+    model = V7Model.load(path)
+    for key in keys[10:]:
+        r = run_v7(load_chart(key), model, pages=data[key].main_order)
+        assert sorted(r.main_order) == sorted(data[key].main_order) and r.method.startswith("v7:gate")
+    assert len(GATE_FEATURES) == 14
+
+
+def test_v1_jumps_are_v1_departures_from_scan(data):
+    from seqlib.io.chart import load_chart
+    from seqlib.ladder.extra import START, extra_matrix, v1_jumps
+    from seqlib.ladder.facts import ChartFacts
+
+    key = sorted(data)[0]
+    chart = load_chart(key)
+    pages = sorted(data[key].main_order)
+    jumps = v1_jumps(chart, pages)
+    scan_next = dict(zip(pages, pages[1:]))
+    assert all(scan_next.get(a) != b for a, b in jumps if a != START)
+    assert all(p.group_override is None for p in chart.pages)  # v1's run leaves the chart as it was
+    X = extra_matrix([(1, 3), (2, 3)], ChartFacts(), ["v1"], v1={(1, 3)})
+    assert X[:, 0].tolist() == [1.0, 0.0]
+
+
+def test_best_solver_is_never_worse_than_either():
+    import numpy as np
+
+    from seqlib.v2.decode import path_cost
+    from seqlib.v3.solve import decode_v3, v3_costs
+
+    rng = np.random.default_rng(3)
+    n = 16
+    probs = {(a, b): float(rng.uniform(0.01, 0.99)) for a in range(n + 1) for b in range(n + 1) if a != b}
+    cost = v3_costs(n, probs, 0.5)
+    best = path_cost(decode_v3(n, probs, 0.5, "best"), cost)
+    for solver in ("search", "cover"):
+        assert best <= path_cost(decode_v3(n, probs, 0.5, solver), cost) + 1e-9
+
+
+def test_v8_trains_and_runs(data):
+    from seqlib.io.chart import load_chart
+    from seqlib.v7 import model_path, settings_for
+    from seqlib.v7.model import V7Model, train_v7
+    from seqlib.v7.runner import run_v7
+
+    keys = sorted(data)
+    settings = settings_for("v8")
+    assert "v1" in settings.groups and settings.solver == "best" and "v1_jump" in settings.feature_names
+    model = train_v7(((load_chart(k), data[k]) for k in keys[:10]), settings, folds=3, margins=(0.0, 2.0))
+    model.save(model_path("v8"))
+    model = V7Model.load(model_path("v8"))
+    for key in keys[10:]:
+        r = run_v7(load_chart(key), model, pages=data[key].main_order)
+        assert sorted(r.main_order) == sorted(data[key].main_order) and r.method.startswith("v8:gate")

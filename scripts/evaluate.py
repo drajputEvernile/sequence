@@ -6,6 +6,7 @@
     python scripts/evaluate.py --method v1 --documents recompute   # ... with continuity re-run too
     python scripts/evaluate.py --method v2              # needs config.V2_MODEL_PATH (scripts/train_v2.py)
     python scripts/evaluate.py --method v2 --oracle-junk     # order the truth's Main pages (ordering alone)
+    python scripts/evaluate.py --method v7              # gated (scripts/train_v7.py); v7s = with the seam; v8 = everything
 
     --set-aside pipeline (default) | model | truth   which pages are set aside (the J series):
         the pipeline's blank_junk_flag, the set-aside model (scripts/train_setaside.py), or the
@@ -59,6 +60,21 @@ def build_method(name: str, documents: str, oracle: bool, v2_start: str = "scan"
         embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
         return lambda chart, truth: run_v3(chart, model, embedder, truth.main_order if oracle else None,
                                            margin=margin, solver=solver, seam=seam)
+    if name in ("v7", "v7s", "v8"):
+        from seqlib.ladder import load_seam
+        from seqlib.v2.features import Embedder
+        from seqlib.v7 import model_path as v7_path
+        from seqlib.v7.model import V7Model
+        from seqlib.v7.runner import run_v7
+
+        if margin is not None or solver is not None:
+            raise SystemExit("v7 / v8 pick their own margin per document: --margin / --solver do not apply")
+        model = V7Model.load(v7_path(name))
+        seam = load_seam(required=True) if "seam" in model.settings.groups else None
+        print(f"{name}: gate threshold {model.threshold}, margins {model.margin_low} (flagged) / "
+              f"{model.margin_high} (others), evidence {list(model.settings.groups)}")
+        embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
+        return lambda chart, truth: run_v7(chart, model, embedder, truth.main_order if oracle else None, seam=seam)
     raise SystemExit(f"unknown method {name}")
 
 
@@ -71,7 +87,7 @@ def set_aside_by_truth(chart, truth) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--method", required=True, choices=("scan", "v1", "v1_csv", "v2", "v3", "v4", "v5", "v6"))
+    ap.add_argument("--method", required=True, choices=("scan", "v1", "v1_csv", "v2", "v3", "v4", "v5", "v6", "v7", "v7s", "v8"))
     ap.add_argument("--split", choices=("test", "train", "all"), default="test")
     ap.add_argument("--documents", choices=("csv", "recompute"), default="csv",
                     help="v1: where its continuity documents come from")
@@ -82,7 +98,7 @@ def main() -> int:
     ap.add_argument("--v2-start", choices=("scan", "v1"), default="scan",
                     help="v2: the order its search begins from (v1 keeps v1's page-number repairs)")
     ap.add_argument("--margin", type=float, default=None, help="v3-v6: override the trained move margin")
-    ap.add_argument("--solver", choices=("search", "cover"), default=None, help="v3-v6: override the solver")
+    ap.add_argument("--solver", choices=("search", "cover", "best"), default=None, help="v3-v6: override the solver")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
     if args.method == "v1_csv" and getattr(cfg, "SHUFFLE_TEST", False):
@@ -137,6 +153,7 @@ def main() -> int:
             "in_place": round(s.in_place / s.pages, 4) if s.pages else "",
             "kendall": "" if s.kendall is None else round(s.kendall, 4),
             "perfect": s.perfect, "junk_fp": s.junk_fp, "junk_fn": s.junk_fn,
+            "method_detail": result.method,
             "predicted": " ".join(map(str, result.main_order)),
             "truth": " ".join(map(str, truths[name].main_order)),
         })

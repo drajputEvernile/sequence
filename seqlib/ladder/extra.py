@@ -9,6 +9,9 @@ Feature groups (columns added to v3's evidence):
   follows dates -- nothing assumes it does.
 * ``hash``   -- header image similarity (1 - Hamming distance / 64).
 * ``seam``   -- the seam cross-encoder's probability that b's opening continues a's ending.
+* ``v1``     -- v1's rules (printed page-number families) put b right after a *against* the scan
+               order (v8). Only departures from scan order count, so the feature says nothing
+               about where a page was scanned.
 
 Anchors (design doc 7.4.1): a -> b is forced when a prints "page n of m", b prints "page n+1 of m"
 (same total) and no other page claims either number; likewise for a fax / print banner counter
@@ -32,8 +35,9 @@ GROUP_FEATURES: dict[str, tuple[str, ...]] = {
     "dates": ("dt_both", "dt_same", "dt_days", "dt_backwards", "dt_a_dated", "dt_b_dated"),
     "hash": ("hash_sim",),
     "seam": ("seam_p",),
+    "v1": ("v1_jump",),
 }
-GROUP_ORDER = ("banner", "dates", "hash", "seam")
+GROUP_ORDER = ("banner", "dates", "hash", "seam", "v1")
 
 
 def feature_names(groups: Sequence[str]) -> tuple[str, ...]:
@@ -48,11 +52,14 @@ def _days(a: str, b: str) -> Optional[float]:
 
 
 def extra_matrix(pairs: Sequence[tuple[int, int]], facts: ChartFacts, groups: Sequence[str],
-                 seam: Optional[dict[tuple[int, int], float]] = None) -> np.ndarray:
+                 seam: Optional[dict[tuple[int, int], float]] = None,
+                 v1: Optional[set[tuple[int, int]]] = None) -> np.ndarray:
     names = feature_names(groups)
     col = {n: i for i, n in enumerate(names)}
     X = np.full((len(pairs), len(names)), np.nan, dtype=np.float32)
     for r, (a, b) in enumerate(pairs):
+        if "v1" in groups:
+            X[r, col["v1_jump"]] = (a, b) in (v1 or set())
         if a == START or b == START:
             continue
         x = X[r]
@@ -158,3 +165,31 @@ def anchor_order(n: int, anchors: Sequence[tuple[int, int]]) -> list[int]:
 
 def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
+
+
+def v1_jumps(chart, pages: Sequence[int]) -> list[tuple[int, int]]:
+    """The links v1's engines make against the scan order of ``pages`` (page numbers, START = -1
+    for the first / last page); [] when v1 keeps scan order or cannot run."""
+    from seqlib.v1.runner import run_v1
+
+    keep = set(pages)
+    saved = {p.page_number: p.group_override for p in chart.pages}
+    try:
+        for page in chart.pages:
+            page.group_override = "main" if page.page_number in keep else "junk"
+        order = [p for p in run_v1(chart).main_order if p in keep]
+    except Exception:  # noqa: BLE001 - v1 is one piece of evidence among many
+        return []
+    finally:
+        for page in chart.pages:
+            page.group_override = saved.get(page.page_number)
+    scan = sorted(keep)
+    if sorted(order) != scan:
+        return []
+    nxt = dict(zip(scan, scan[1:]))
+    jumps = [(a, b) for a, b in zip(order, order[1:]) if nxt.get(a) != b]
+    if order and order[0] != scan[0]:
+        jumps.append((START, order[0]))
+    if order and order[-1] != scan[-1]:
+        jumps.append((order[-1], START))
+    return jumps

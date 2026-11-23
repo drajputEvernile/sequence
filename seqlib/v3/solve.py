@@ -13,6 +13,8 @@ gets P = FLOOR.
   cycles; each cycle is broken at its dearest link into a chain and inserted where it costs least;
   then the block-move search polishes the result.
 
+* ``best`` -- both, and the cheaper order (v8).
+
 Anchors (v4+, design doc 7.4.1): a forced link a -> b costs nothing and every other link out of a
 or into b costs ANCHOR_PENALTY more (finite, so the search can still compare orders); the search
 then starts from the scan order with each anchored chain kept together.
@@ -97,8 +99,14 @@ def decode_v3(n: int, edge: dict[tuple[int, int], float], margin: float, solver:
         begin = anchor_order(n, anchors)
     if n <= EXACT_MAX:
         return held_karp(cost)
-    if solver == "cover":
+    searched = local_search(cost, begin, max_block=max_block) if solver in ("search", "best") else None
+    covered = None
+    if solver in ("cover", "best"):
         start = _cover(cost)
         polished = local_search(cost, start, max_block=max_block)
-        return polished if path_cost(polished, cost) <= path_cost(start, cost) else start
-    return local_search(cost, begin, max_block=max_block)
+        covered = polished if path_cost(polished, cost) <= path_cost(start, cost) else start
+    if searched is None:
+        return covered
+    if covered is None:
+        return searched
+    return covered if path_cost(covered, cost) < path_cost(searched, cost) else searched

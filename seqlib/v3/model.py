@@ -56,7 +56,8 @@ class V3Settings:
     # tuning rule: the margin with the best repair on held-out shuffled documents among those that
     # keep held-out in-order documents at least this right (successor accuracy)
     harm_floor: float = 0.998
-    validation_share: float = 0.2
+    validation_share: float = 0.2  # no longer used (tuning is cross-fitted); kept for saved models
+    folds: int = 5  # cross-fitting folds for tuning (seqlib/v3/tuning.py)
     solver: str = "search"  # "search" (exact <= 11 pages, else block moves) or "cover"
     params: dict = field(default_factory=lambda: {
         "max_iter": 500, "learning_rate": 0.05, "max_leaf_nodes": 31, "l2_regularization": 1.0, "random_state": 0,
@@ -79,6 +80,7 @@ class ChartPairs:
     X: np.ndarray  # evidence columns (+ the version's extra groups)
     y: np.ndarray
     anchors: list[tuple[int, int]] = field(default_factory=list)  # page numbers
+    extra_candidates: list[tuple[int, int]] = field(default_factory=list)  # v1's jumps (v8)
 
 
 def chart_pairs(chart: Chart, pages: Sequence[int], settings: V3Settings, truth_order: Optional[list[int]] = None,
@@ -90,7 +92,8 @@ def chart_pairs(chart: Chart, pages: Sequence[int], settings: V3Settings, truth_
     if settings.groups or settings.anchors:
         from seqlib.ladder.facts import chart_facts
 
-        facts = chart_facts(chart, [g for g in settings.groups if g != "seam"] + (["banner"] if settings.anchors else []))
+        facts = chart_facts(chart, [g for g in settings.groups if g not in ("seam", "v1")]
+                            + (["banner"] if settings.anchors else []))
         keep = {p.page_number for p in cf.pages}
         facts.dos = {k: v for k, v in facts.dos.items() if k in keep}
         facts.banner = {k: v for k, v in facts.banner.items() if k in keep}
@@ -99,6 +102,12 @@ def chart_pairs(chart: Chart, pages: Sequence[int], settings: V3Settings, truth_
         printed = {p.page_number: p.printed for p in cf.pages if p.printed}
         anchors = find_anchors(printed, facts, settings.banner_anchors)
         pairs |= set(anchors)
+    jumps: list[tuple[int, int]] = []
+    if "v1" in settings.groups:
+        from seqlib.ladder.extra import v1_jumps
+
+        jumps = v1_jumps(chart, [p.page_number for p in cf.pages])
+        pairs |= set(jumps)
     positives = true_pairs(truth_order) if truth_order else set()
     pairs = sorted(pairs | positives)  # training sees every true pair
     X = _evidence(pair_matrix(cf, pairs)) if pairs else np.zeros((0, len(EVIDENCE)))
@@ -108,9 +117,9 @@ def chart_pairs(chart: Chart, pages: Sequence[int], settings: V3Settings, truth_
             from seqlib.ladder.seam import seam_for_pairs
 
             seam_probs = seam_for_pairs(seam, cf, pairs)
-        X = np.hstack([X, extra_matrix(pairs, facts, settings.groups, seam_probs)])
+        X = np.hstack([X, extra_matrix(pairs, facts, settings.groups, seam_probs, set(jumps))])
     y = np.array([p in positives for p in pairs], dtype=np.int8)
-    return ChartPairs(chart.name, cf, pairs, X, y, anchors)
+    return ChartPairs(chart.name, cf, pairs, X, y, anchors, jumps)
 
 
 def per_page_weights(pairs: Sequence[tuple[int, int]]) -> np.ndarray:
@@ -203,7 +212,7 @@ def train(examples: Iterable[tuple[Chart, ChartTruth]], settings: Optional[V3Set
     """``controls``: names of the training documents left in scan order (shuffle manifest), used to
     measure harm while tuning the margin; without them, documents whose truth is in scan order are.
     ``fit_exclude``: documents the evidence model must not fit on (the seam model's own half);
-    they still serve for tuning the margin."""
+    they are left out of tuning too (the seam has seen them)."""
     settings = settings or V3Settings()
     rows: list[ChartPairs] = []
     truths: dict[str, list[int]] = {}
@@ -214,7 +223,7 @@ def train(examples: Iterable[tuple[Chart, ChartTruth]], settings: Optional[V3Set
         if len(order) < 2:
             continue
         r = chart_pairs(chart, order, settings, truth_order=order, seam=seam)
-        cand = set(candidates(r.cf, settings.window, settings.top_k)) | set(r.anchors)
+        cand = set(candidates(r.cf, settings.window, settings.top_k)) | set(r.anchors) | set(r.extra_candidates)
         pos = true_pairs(order)
         recall[0] += len(pos & cand)
         recall[1] += len(pos)
@@ -227,45 +236,28 @@ def train(examples: Iterable[tuple[Chart, ChartTruth]], settings: Optional[V3Set
     in_order = controls if controls is not None else {n for n, t in truths.items() if t == sorted(t)}
     fit_exclude = fit_exclude or set()
 
-    # 1. hold out documents to tune the margin (deterministic, by name)
-    rng = np.random.default_rng(0)
-    names = sorted(truths)
-    held = set(rng.choice(names, max(1, int(len(names) * settings.validation_share)), replace=False)) \
-        if len(names) >= 5 else set()
-    fit_rows = [r for r in rows if r.chart not in held and r.chart not in fit_exclude] or \
-        [r for r in rows if r.chart not in fit_exclude] or rows
-    model = _fit(fit_rows, settings.params)
-    curve = []
-    best = None
-    for margin in settings.margins:
-        repair, harm = [], []
-        for r in rows:
-            if r.chart not in held:
-                continue
-            score = successor_accuracy(order_with(r, model.predict(r.X), margin, settings.solver), truths[r.chart])
-            (harm if r.chart in in_order else repair).append(score)
-        point = {"margin": margin,
-                 "held_out_shuffled_successor": round(float(np.mean(repair)), 4) if repair else None,
-                 "held_out_in_order_successor": round(float(np.mean(harm)), 4) if harm else None,
-                 "documents": [len(repair), len(harm)]}
-        curve.append(point)
-        ok = point["held_out_in_order_successor"] is None or point["held_out_in_order_successor"] >= settings.harm_floor
-        key = point["held_out_shuffled_successor"] or 0.0
-        if ok and (best is None or key > best[0]):
-            best = (key, margin)
-    margin = best[1] if best else max(settings.margins)
+    # 1. tune the margin on out-of-fold scores of every document the evidence model may fit on
+    #    (seqlib/v3/tuning.py); with the seam, its own half is left out (its seam scores are too good)
+    from .tuning import choose_margin, cross_fit, margin_table
+
+    usable = [r for r in rows if r.chart not in fit_exclude] or rows
+    margins = tuple(sorted(settings.margins))
+    oof = cross_fit(usable, settings, getattr(settings, "folds", 5))
+    names, succ, _, _ = margin_table(oof, truths, margins, settings.solver)
+    flags = np.array([n in in_order for n in names])
+    margin, curve = choose_margin(succ, flags, margins, settings.harm_floor)
 
     # 2. the final evidence model on every training document it may fit on
-    final = _fit([r for r in rows if r.chart not in fit_exclude] or rows, settings.params)
+    final = _fit(usable, settings.params)
     names_all = settings.feature_names
     report = {
         "version": settings.version, "groups": list(settings.groups), "anchors": settings.anchors,
-        "documents": len(rows), "fitted_on_documents": len([r for r in rows if r.chart not in fit_exclude]),
+        "documents": len(rows), "fitted_on_documents": len(usable),
         "pairs": int(sum(len(r.y) for r in rows)), "positive_pairs": int(sum(r.y.sum() for r in rows)),
         "candidate_recall": round(recall[0] / recall[1], 4) if recall[1] else None,
         "anchors_found": anchor_stats[0],
         "anchors_correct": round(anchor_stats[1] / anchor_stats[0], 4) if anchor_stats[0] else None,
-        "held_out_documents": len(held), "held_out_in_order": len(held & in_order),
+        "tuned_on_documents": len(names), "tuned_in_order": int(flags.sum()), "folds": getattr(settings, "folds", 5),
         "margin_curve": curve, "chosen_margin": margin, "solver": settings.solver,
         "harm_floor": settings.harm_floor,
         "unused_evidence": [names_all[k] for k in range(len(names_all)) if k not in final.active],

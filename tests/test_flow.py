@@ -323,6 +323,14 @@ def test_shuffle_test_end_to_end_with_its_config(raw, tmp_path):
     summary = json.loads(r.stdout[r.stdout.index("{"):r.stdout.rindex("}") + 1])
     assert summary["charts"] == len(docs) and summary["failed_charts"] == 0
     assert summary["perfect_charts"] < 1.0  # the shuffle broke scan order
+    r = run("link_report.py")
+    assert r.returncode == 0, r.stdout + r.stderr
+    report = json.loads((out / "outputs" / "link_report.json").read_text(encoding="utf-8"))
+    every = report["all"]["all"]
+    assert every["broken"] > 0 and "scan-setaside_truth" in every["methods"]
+    assert every["methods"]["scan-setaside_truth"]["repaired"] == 0.0  # scan order repairs nothing
+    assert every["methods"]["scan-setaside_truth"]["kept"] == 1.0
+    assert sum(c["links"] for c in report["kind"].values()) == every["links"]
 
 
 def test_v2_reads_no_order_dependent_value(raw):

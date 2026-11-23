@@ -20,6 +20,8 @@ every gain can be attributed. Every version is scored the same three ways:
 | **v4** | v3 + page-number and fax/print **banner anchors** (forced links, 7.4.1) + banner features (7.1.1) | built, to run |
 | **v5** | v4 + each page's **own DOS read from its OCR** (the pipeline's DOS rules); the model learns from the truth whether order follows dates | built, to run |
 | **v6** | v5 + **header image fingerprint** (7.1.2) + **seam cross-encoder** (fine-tuned small language model, 8.3) | built, to run (needs a local base model; GPU recommended) |
+| **v7** / **v7s** | v5's (v7) or v6's (v7s) evidence + a **gate**: P(document out of order) from document-level signs on its scan order (anchors the scan order breaks, weak scan links, gain of the best order over scan, dates jumping back, fax counters breaking). Flagged documents get a low margin, others a high one (`train_v7.py`) | built, to run |
+| **v8** | everything: v6's evidence + **v1's rules as evidence** (its departures from scan order: a pair feature, extra candidates, a gate sign) + the gate + **both solvers** (search and cover, the cheaper order wins). Evaluate also with `--set-aside model` for the review-UI score | built, to run |
 | set-aside | blank / junk / duplicate learned from the truth (review-UI score) | built (`train_setaside.py`), to run |
 
 Differences from the design document, given the data on the training machine:
@@ -37,3 +39,35 @@ Not built, and why:
 - **Forbidden edges F1, F2, F4, F5 (7.4.2)** belong to the design's multi-chain formulation. Here
   the chart is one path, where two different-date or demographics / visit pages may legitimately
   sit side by side at a document boundary; the page-number anchors carry the F4 / F5 logic.
+
+## Tuning (all versions, since v7)
+
+Every version's margin (and v7 / v8's gate) is tuned on **out-of-fold** scores: the training
+documents are split into 5 folds, each scored by an evidence model fitted on the other four, so
+all ~390 training documents count (before: a 20% hold-out, ~78 documents, ~23 of them in order).
+Tuning sees only the pairs an unseen document would have (candidates, anchors, v1's jumps; before,
+every true pair was among them, which flattered the evidence). With the seam (v6, v7s, v8) the
+seam model's own half is left out of tuning. v3 to v6 trained before this change keep working;
+retrain them (`train_ladder.py`) to compare like with like.
+
+## Results so far (test documents; truth set-aside)
+
+| method | shuffled: position | successor | perfect | real: position | successor | perfect |
+|---|---|---|---|---|---|---|
+| scan | 56.1% | 78.9% | 0.0% | 98.72% | 99.74% | 97.94% |
+| v1 | 60.4% | 81.2% | 8.7% | 98.72% | 99.74% | 97.94% |
+| v2 | 56.6% | 79.9% | 1.1% | 98.72% | 99.74% | 97.94% |
+| v3 (m 6) | 56.1% | 78.9% | 0.0% | 98.72% | 99.74% | 97.94% |
+| v4 (m 3) | 59.0% | 81.1% | 5.4% | 98.95% | 99.80% | 97.94% |
+| v5 (m 3) | 59.9% | 81.2% | 6.5% | 98.95% | 99.80% | 97.94% |
+| v6 (m 3) | 59.1% | 81.3% | 7.6% | 98.95% | 99.80% | 97.94% |
+| v6 (m 1.5) | 61.2% | 82.2% | 9.8% | 98.84% | 99.71% | 96.91% |
+
+Read: anchors (v4) and own dates (v5) help; the text evidence (v3, seam) adds little. A low margin
+repairs more but breaks an in-order real document -- the trade-off v7's gate is built to remove.
+On real documents the review-UI score (strict, pipeline set-aside: 74.5%) is limited by the
+set-aside (blank / junk) disagreement, not by the order: the set-aside model is the larger lever.
+
+`scripts/link_report.py` splits the shuffle test's true links into within-document and boundary
+links (by date): boundary links between separate documents are largely beyond what page content
+can tell, so their share of the broken links bounds what any version can repair.

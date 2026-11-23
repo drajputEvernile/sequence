@@ -1,17 +1,42 @@
-# repair: shuffled test documents
+# ===== 1. training (training shuffle set) =====
+$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_train\config_shuffled.py"
+
+# 1a. retrain v3-v6 with the new tuning (all training documents, out of fold)
+python scripts\train_ladder.py --version v3
+python scripts\train_ladder.py --version v4
+python scripts\train_ladder.py --version v5
+python scripts\train_ladder.py --version v6
+
+# 1b. the gated versions (v8 = everything; the slowest)
+python scripts\train_v7.py --version v7
+python scripts\train_v7.py --version v7s
+python scripts\train_v7.py --version v8
+
+# ===== 2. repair: shuffled test documents =====
 $env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_eval\config_shuffled.py"
 python scripts\evaluate.py --method v3 --set-aside truth
 python scripts\evaluate.py --method v4 --set-aside truth
 python scripts\evaluate.py --method v5 --set-aside truth
 python scripts\evaluate.py --method v6 --set-aside truth
-python scripts\evaluate.py --method v6 --margin 1.5 --set-aside truth
+python scripts\evaluate.py --method v7 --set-aside truth
+python scripts\evaluate.py --method v7s --set-aside truth
+python scripts\evaluate.py --method v8 --set-aside truth
+python scripts\link_report.py --methods scan-setaside_truth v1-csv-setaside_truth v5-setaside_truth v6-setaside_truth v6-m1.5-setaside_truth v7-setaside_truth v7s-setaside_truth v8-setaside_truth
 
-# no harm: real test documents
+# ===== 3. no harm: real test documents =====
 Remove-Item Env:SEQ_CONFIG
 python scripts\evaluate.py --method v3 --set-aside truth
 python scripts\evaluate.py --method v4 --set-aside truth
 python scripts\evaluate.py --method v5 --set-aside truth
 python scripts\evaluate.py --method v6 --set-aside truth
-python scripts\evaluate.py --method v6 --margin 1.5 --set-aside truth
+python scripts\evaluate.py --method v7 --set-aside truth
+python scripts\evaluate.py --method v7s --set-aside truth
+python scripts\evaluate.py --method v8 --set-aside truth
+
+# ===== 4. set-aside model (blank / junk) on real data: the review-UI score =====
+python scripts\junk_report.py
+python scripts\train_setaside.py
+python scripts\evaluate.py --method scan --set-aside model
+python scripts\evaluate.py --method v8 --set-aside model
 
 python scripts\compare.py

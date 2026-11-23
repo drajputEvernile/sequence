@@ -113,6 +113,16 @@ python scripts\evaluate.py --method v3 --set-aside truth          # no harm
 python scripts\compare.py                                          # everything side by side
 ```
 
+v7 and v8, the gated versions (`v7` = v5's evidence, `v7s` = v6's with the seam model, `v8` = everything: v6's evidence + v1's rules + both solvers; all trained with `train_v7.py --version ...`):
+
+```
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_train\config_shuffled.py"
+python scripts\train_v7.py --version v7
+$env:SEQ_CONFIG = "<repo>\workspace\shuffle_eval\config_shuffled.py"
+python scripts\evaluate.py --method v7 --set-aside truth
+python scripts\link_report.py                    # which kinds of links each method repairs
+```
+
 Each evaluation writes `summary.json`, `per_chart.csv` and `errors.txt` under `OUTPUT_ROOT/eval/`.
 
 ## Looking at one document
