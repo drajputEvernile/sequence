@@ -1,4 +1,5 @@
-"""The experiment ladder (v4 to v6): facts, anchors, solver with anchors, training, the seam model."""
+"""The engine's evidence and versions (v5, v8, v9): facts, markers, content clues, anchors, the solver,
+training, the seam model, the gate."""
 from __future__ import annotations
 
 import shutil
@@ -89,18 +90,19 @@ def test_solver_restores_a_reversed_numbered_document():
         assert decode_v3(n, probs, 1.0, solver, anchors=anchors)[:8] == truth[:8]
 
 
-@pytest.mark.parametrize("version", ["v4", "v5"])
-def test_versions_train_and_run(data, version):
+def test_v5_trains_and_runs(data):
     from seqlib.io.chart import load_chart
-    from seqlib.ladder import settings_for
     from seqlib.v3.model import V3Model, train
     from seqlib.v3.runner import run_v3
+    from seqlib.versions import model_path, settings_for
+
+    version = "v5"
 
     keys = sorted(data)
     model = train(((load_chart(k), data[k]) for k in keys[:10]), settings_for(version, margins=(0.0, 2.0)))
     assert model.report["version"] == version and model.report["anchors_found"] > 0
     assert model.report["anchors_correct"] == 1.0  # synthetic "Page i of k" never lies
-    path = cfg.LADDER_MODEL_DIR / version / "model.joblib"
+    path = model_path(version)
     model.save(path)
     model = V3Model.load(path)
     for key in keys[10:]:
@@ -123,14 +125,15 @@ def _tiny_base(path):
                          intermediate_size=64, max_position_embeddings=256)).save_pretrained(str(path))
 
 
-def test_seam_and_v6(data):
+def test_seam_model(data):
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
     from seqlib.io.chart import load_chart
-    from seqlib.ladder import load_seam, settings_for
+    from seqlib.ladder import load_seam
     from seqlib.ladder.seam import seam_half, train_seam
     from seqlib.v3.model import train
     from seqlib.v3.runner import run_v3
+    from seqlib.versions import settings_for
 
     shutil.rmtree(cfg.SEAM_MODEL_PATH, ignore_errors=True)
     _tiny_base(cfg.SEAM_BASE_MODEL_PATH)
@@ -141,7 +144,7 @@ def test_seam_and_v6(data):
     assert report["pairs"] > 0
     seam = load_seam(required=True)
     assert set(seam.meta["trained_on"]) == set(half)
-    model = train(((load_chart(k), data[k]) for k in keys[:10]), settings_for("v6", margins=(0.0, 2.0)),
+    model = train(((load_chart(k), data[k]) for k in keys[:10]), settings_for("v5", groups=("banner", "dates", "hash", "seam"), margins=(0.0, 2.0)),
                   seam=seam, fit_exclude=set(half))
     assert model.report["fitted_on_documents"] == 10 - len(half)
     r = run_v3(load_chart(keys[-1]), model, pages=data[keys[-1]].main_order, seam=seam)
@@ -150,12 +153,11 @@ def test_seam_and_v6(data):
 
 def test_margin_rule_when_no_margin_meets_the_floor(data):
     from seqlib.io.chart import load_chart
-    from seqlib.ladder import settings_for
-    from seqlib.v3.model import train
+    from seqlib.v3.model import V3Settings, train
 
     keys = sorted(data)
     model = train(((load_chart(k), data[k]) for k in keys[:10]),
-                  settings_for("v3", margins=(0.0, 2.0, 6.0), harm_floor=1.01))  # unreachable floor
+                  V3Settings(margins=(0.0, 2.0, 6.0), harm_floor=1.01))  # unreachable floor
     curve = model.report["margin_curve"]
     key = lambda p: (p["held_out_in_order_successor"] or 0.0, p["held_out_shuffled_successor"] or 0.0)  # noqa: E731
     chosen = next(p for p in curve if p["margin"] == model.margin)
@@ -163,14 +165,14 @@ def test_margin_rule_when_no_margin_meets_the_floor(data):
     assert model.report["tuned_on_documents"] == 10  # every document, out of fold
 
 
-def test_v7_gate_policy_and_run(data):
+def test_gate_policy_and_v8(data):
     import numpy as np
 
     from seqlib.io.chart import load_chart
     from seqlib.v3.tuning import choose_policy
-    from seqlib.v7 import model_path, settings_for
     from seqlib.v7.model import GATE_FEATURES, V7Model, train_v7
     from seqlib.v7.runner import run_v7
+    from seqlib.versions import model_path, settings_for
 
     # the policy: when the high margin is best everywhere, nothing gains from the gate
     succ = np.array([[0.5, 0.9], [0.5, 0.9], [1.0, 1.0], [0.9, 1.0]])  # margins (0, 2): docs x margins
@@ -183,16 +185,19 @@ def test_v7_gate_policy_and_run(data):
     assert (p["margin_low"], p["margin_high"], p["repair"], p["in_order"]) == (0.0, 2.0, 1.0, 1.0)
 
     keys = sorted(data)
-    settings = settings_for("v7")
+    settings = settings_for("v8")
+    assert "v1" in settings.groups and settings.solver == "best" and "v1_jump" in settings.feature_names
+    assert (settings.reverse_share, settings.swaps, settings.objective) == (1.0, False, "successor")
     model = train_v7(((load_chart(k), data[k]) for k in keys[:10]), settings, folds=3, margins=(0.0, 2.0))
     assert model.report["tuned_on_documents"] == 10 and len(model.report["margin_curve_out_of_fold"]) == 2
-    path = model_path("v7")
+    assert model.report["candidate_recall"] > 0.9 and model.report["anchors_correct"] == 1.0
+    path = model_path("v8")
     model.save(path)
     model = V7Model.load(path)
     for key in keys[10:]:
         r = run_v7(load_chart(key), model, pages=data[key].main_order)
-        assert sorted(r.main_order) == sorted(data[key].main_order) and r.method.startswith("v7:gate")
-    assert len(GATE_FEATURES) == 14
+        assert sorted(r.main_order) == sorted(data[key].main_order) and r.method.startswith("v8:gate")
+    assert len(GATE_FEATURES) == 15
 
 
 def test_v1_jumps_are_v1_departures_from_scan(data):
@@ -226,18 +231,23 @@ def test_best_solver_is_never_worse_than_either():
         assert best <= path_cost(decode_v3(n, probs, 0.5, solver), cost) + 1e-9
 
 
-def test_v8_trains_and_runs(data):
+def test_v9_trains_on_position_and_runs(data):
     from seqlib.io.chart import load_chart
-    from seqlib.v7 import model_path, settings_for
     from seqlib.v7.model import V7Model, train_v7
     from seqlib.v7.runner import run_v7
+    from seqlib.versions import model_path, settings_for
 
     keys = sorted(data)
-    settings = settings_for("v8")
-    assert "v1" in settings.groups and settings.solver == "best" and "v1_jump" in settings.feature_names
+    settings = settings_for("v9")
+    assert {"markers", "content", "pattern"} <= set(settings.groups)
+    assert {"mk_follows", "ct_sec_delta", "pt_with_trend"} <= set(settings.feature_names)
     model = train_v7(((load_chart(k), data[k]) for k in keys[:10]), settings, folds=3, margins=(0.0, 2.0))
-    model.save(model_path("v8"))
-    model = V7Model.load(model_path("v8"))
+    rep = model.report
+    assert rep["tuned_on"] == "position" and rep["decode"] == {"reverse_share": 0.25, "swaps": True}
+    assert any(k.startswith("marker:") for k in rep["anchors_by_source"])  # synthetic "Page i of k"
+    assert rep["anchors_correct"] == 1.0
+    model.save(model_path("v9"))
+    model = V7Model.load(model_path("v9"))
     for key in keys[10:]:
         r = run_v7(load_chart(key), model, pages=data[key].main_order)
-        assert sorted(r.main_order) == sorted(data[key].main_order) and r.method.startswith("v8:gate")
+        assert sorted(r.main_order) == sorted(data[key].main_order) and r.method.startswith("v9:gate")

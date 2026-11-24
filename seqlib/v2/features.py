@@ -44,7 +44,7 @@ FEATURES = (
     "same_doc_v1", "doc_delta_v1",
     "a_fill", "a_words", "b_words",
     "a_rel_pos", "b_rel_pos", "n_pages",
-    "emb_tail_head",
+    "emb_tail_head",  # always empty now (the sentence embedder was removed); kept so trained models load
 )
 _DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 
@@ -180,7 +180,7 @@ def page_infos(chart: Chart, pages: Optional[Sequence[int]] = None) -> list[Page
     return out
 
 
-def chart_features(chart: Chart, pages: Optional[Sequence[int]] = None, embedder=None) -> ChartFeatures:
+def chart_features(chart: Chart, pages: Optional[Sequence[int]] = None) -> ChartFeatures:
     infos = page_infos(chart, pages)
     tails = [p.tail_text for p in infos]
     heads = [p.head_text for p in infos]
@@ -192,8 +192,6 @@ def chart_features(chart: Chart, pages: Optional[Sequence[int]] = None, embedder
         word_sim=_cosines(tails, heads, "word", (1, 2)),
         page_sim=_cosines(whole, whole, "word", (1, 1)),
     )
-    if embedder is not None and infos:
-        cf.emb_sim = embedder.similarity(tails, heads)
     return cf
 
 
@@ -318,18 +316,3 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return math.nan
     return len(a & b) / len(a | b)
-
-
-class Embedder:
-    """Sentence embeddings from a local model folder (config.EMBEDDING_MODEL_PATH); nothing is
-    downloaded. Needs ``sentence-transformers`` installed."""
-
-    def __init__(self, path, device: str = "cpu") -> None:
-        from sentence_transformers import SentenceTransformer
-
-        self.model = SentenceTransformer(str(path), device=device)
-
-    def similarity(self, left: Sequence[str], right: Sequence[str]) -> np.ndarray:
-        a = self.model.encode(list(left), normalize_embeddings=True, show_progress_bar=False)
-        b = self.model.encode(list(right), normalize_embeddings=True, show_progress_bar=False)
-        return np.asarray(a) @ np.asarray(b).T

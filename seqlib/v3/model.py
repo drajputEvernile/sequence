@@ -2,7 +2,7 @@
 
 v2 learned a shortcut: with the scan position among its inputs, "the scan neighbour is the next
 page" explained almost every training pair, so the evidence (page numbers, text continuing, page
-facts) was hardly used and nothing ever moved (diagnose_v2: the true next page is the model's
+facts) was hardly used and nothing ever moved (v2's diagnosis: the true next page is the model's
 first choice for 6% of moved pages).
 
 v3 splits the two:
@@ -34,9 +34,14 @@ from seqlib.io.chart import Chart
 from seqlib.io.ground_truth import ChartTruth
 from seqlib.ladder.extra import extra_matrix, feature_names, find_anchors
 from seqlib.v2.features import FEATURES, START, candidates, chart_features, pair_matrix
-from seqlib.v2.model import true_pairs
 
 logger = logging.getLogger(__name__)
+
+def true_pairs(order: list[int]) -> set[tuple[int, int]]:
+    """The links of an order, START (-1) closing it: START -> first, each page -> the next, last -> START."""
+    full = [START, *order, START]
+    return set(zip(full, full[1:]))
+
 
 # Inputs that say where a page was scanned: left out of the evidence model.
 SCAN_FEATURES = frozenset({"scan_delta", "abs_scan_delta", "is_scan_next", "is_scan_prev", "a_rel_pos", "b_rel_pos"})
@@ -59,6 +64,13 @@ class V3Settings:
     validation_share: float = 0.2  # no longer used (tuning is cross-fitted); kept for saved models
     folds: int = 5  # cross-fitting folds for tuning (seqlib/v3/tuning.py)
     solver: str = "search"  # "search" (exact <= 11 pages, else block moves) or "cover"
+    # v9: a link to the page scanned just *before* (a reversed run read backwards) pays this share of
+    # the margin instead of all of it; swaps of two pages join the search's moves; the margin and
+    # the gate are tuned on this measure ("successor" or "position")
+    reverse_share: float = 1.0
+    swaps: bool = False
+    objective: str = "successor"
+    marker_anchor_kinds: tuple[str, ...] = ("of", "page", "bare")
     params: dict = field(default_factory=lambda: {
         "max_iter": 500, "learning_rate": 0.05, "max_leaf_nodes": 31, "l2_regularization": 1.0, "random_state": 0,
     })
@@ -81,29 +93,58 @@ class ChartPairs:
     y: np.ndarray
     anchors: list[tuple[int, int]] = field(default_factory=list)  # page numbers
     extra_candidates: list[tuple[int, int]] = field(default_factory=list)  # v1's jumps (v8)
+    more_candidates: list[tuple[int, int]] = field(default_factory=list)  # next printed number / list item (v9)
+    markers: dict = field(default_factory=dict)  # page -> Marker (v9)
+
+
+def decode_options(settings) -> dict:
+    """The solver's switches a version's settings carry (old saved settings: the class defaults)."""
+    return {"reverse_share": getattr(settings, "reverse_share", 1.0), "swaps": getattr(settings, "swaps", False)}
 
 
 def chart_pairs(chart: Chart, pages: Sequence[int], settings: V3Settings, truth_order: Optional[list[int]] = None,
-                embedder=None, seam=None) -> ChartPairs:
-    cf = chart_features(chart, pages, embedder)
+                seam=None) -> ChartPairs:
+    cf = chart_features(chart, pages)
     pairs = set(candidates(cf, settings.window, settings.top_k))
+    groups = tuple(settings.groups)
     facts = None
     anchors: list[tuple[int, int]] = []
-    if settings.groups or settings.anchors:
+    if groups or settings.anchors:
         from seqlib.ladder.facts import chart_facts
 
-        facts = chart_facts(chart, [g for g in settings.groups if g not in ("seam", "v1")]
-                            + (["banner"] if settings.anchors else []))
+        need = [g for g in groups if g in ("banner", "dates", "hash")]
+        need += (["banner"] if settings.anchors else []) + (["dates"] if "pattern" in groups else [])
+        facts = chart_facts(chart, sorted(set(need)))
         keep = {p.page_number for p in cf.pages}
         facts.dos = {k: v for k, v in facts.dos.items() if k in keep}
         facts.banner = {k: v for k, v in facts.banner.items() if k in keep}
         facts.header_hash = {k: v for k, v in facts.header_hash.items() if k in keep}
+    texts = {p.page_number: p.inp.text for p in cf.pages}
+    markers, contents, trend, more = {}, None, None, []
+    if "markers" in groups:
+        from seqlib.ladder.markers import marker_successors, page_markers
+
+        markers = page_markers(texts)
+        more += marker_successors(markers)
+    if "content" in groups:
+        from seqlib.ladder.content import item_successors, page_contents
+
+        contents = page_contents(texts)
+        more += item_successors(contents)
+    if "pattern" in groups:
+        from seqlib.ladder.content import date_trend
+
+        trend = date_trend(facts.dos, [p.page_number for p in cf.pages])
     if settings.anchors:
+        from seqlib.ladder.markers import marker_anchors
+
         printed = {p.page_number: p.printed for p in cf.pages if p.printed}
-        anchors = find_anchors(printed, facts, settings.banner_anchors)
+        extra = marker_anchors(markers, getattr(settings, "marker_anchor_kinds", ("of", "page", "bare"))) if markers else []
+        anchors = find_anchors(printed, facts, settings.banner_anchors, markers=extra)
         pairs |= set(anchors)
+    pairs |= set(more)
     jumps: list[tuple[int, int]] = []
-    if "v1" in settings.groups:
+    if "v1" in groups:
         from seqlib.ladder.extra import v1_jumps
 
         jumps = v1_jumps(chart, [p.page_number for p in cf.pages])
@@ -111,15 +152,16 @@ def chart_pairs(chart: Chart, pages: Sequence[int], settings: V3Settings, truth_
     positives = true_pairs(truth_order) if truth_order else set()
     pairs = sorted(pairs | positives)  # training sees every true pair
     X = _evidence(pair_matrix(cf, pairs)) if pairs else np.zeros((0, len(EVIDENCE)))
-    if settings.groups:
+    if groups:
         seam_probs = None
-        if "seam" in settings.groups and seam is not None:
+        if "seam" in groups and seam is not None:
             from seqlib.ladder.seam import seam_for_pairs
 
             seam_probs = seam_for_pairs(seam, cf, pairs)
-        X = np.hstack([X, extra_matrix(pairs, facts, settings.groups, seam_probs, set(jumps))])
+        X = np.hstack([X, extra_matrix(pairs, facts, groups, seam_probs, set(jumps), markers=markers,
+                                       contents=contents, trend=trend)])
     y = np.array([p in positives for p in pairs], dtype=np.int8)
-    return ChartPairs(chart.name, cf, pairs, X, y, anchors, jumps)
+    return ChartPairs(chart.name, cf, pairs, X, y, anchors, jumps, sorted(set(more)), markers)
 
 
 def per_page_weights(pairs: Sequence[tuple[int, int]]) -> np.ndarray:
@@ -187,7 +229,8 @@ def _fit(rows: list[ChartPairs], params: dict) -> EvidenceModel:
     return EvidenceModel(params).fit(X, y, w)
 
 
-def order_with(rows: ChartPairs, probs: np.ndarray, margin: float, solver: str) -> list[int]:
+def order_with(rows: ChartPairs, probs: np.ndarray, margin: float, solver: str,
+               options: Optional[dict] = None) -> list[int]:
     """The decoded order (page numbers) for one chart."""
     from .solve import decode_v3
 
@@ -196,8 +239,13 @@ def order_with(rows: ChartPairs, probs: np.ndarray, margin: float, solver: str) 
     node[START] = 0
     edge = {(node[a], node[b]): float(p) for (a, b), p in zip(rows.pairs, probs)}
     anchors = [(node[a], node[b]) for a, b in rows.anchors if a in node and b in node]
-    order = decode_v3(len(pages), edge, margin, solver, anchors=anchors)
+    order = decode_v3(len(pages), edge, margin, solver, anchors=anchors, **(options or {}))
     return [pages[k - 1] for k in order]
+
+
+def position_accuracy(order: list[int], truth: list[int]) -> float:
+    """Share of pages at exactly their true place (what the review UI counts, junk aside)."""
+    return sum(a == b for a, b in zip(order, truth)) / len(truth) if truth else 1.0
 
 
 def successor_accuracy(order: list[int], truth: list[int]) -> float:
@@ -223,7 +271,8 @@ def train(examples: Iterable[tuple[Chart, ChartTruth]], settings: Optional[V3Set
         if len(order) < 2:
             continue
         r = chart_pairs(chart, order, settings, truth_order=order, seam=seam)
-        cand = set(candidates(r.cf, settings.window, settings.top_k)) | set(r.anchors) | set(r.extra_candidates)
+        cand = (set(candidates(r.cf, settings.window, settings.top_k)) | set(r.anchors) | set(r.extra_candidates)
+                | set(r.more_candidates))
         pos = true_pairs(order)
         recall[0] += len(pos & cand)
         recall[1] += len(pos)
@@ -243,7 +292,8 @@ def train(examples: Iterable[tuple[Chart, ChartTruth]], settings: Optional[V3Set
     usable = [r for r in rows if r.chart not in fit_exclude] or rows
     margins = tuple(sorted(settings.margins))
     oof = cross_fit(usable, settings, getattr(settings, "folds", 5))
-    names, succ, _, _ = margin_table(oof, truths, margins, settings.solver)
+    names, succ, _, _ = margin_table(oof, truths, margins, settings.solver, getattr(settings, "objective", "successor"),
+                                     decode_options(settings))
     flags = np.array([n in in_order for n in names])
     margin, curve = choose_margin(succ, flags, margins, settings.harm_floor)
 

@@ -12,10 +12,16 @@ Feature groups (columns added to v3's evidence):
 * ``v1``     -- v1's rules (printed page-number families) put b right after a *against* the scan
                order (v8). Only departures from scan order count, so the feature says nothing
                about where a page was scanned.
+* ``markers`` -- page numbers in every printed form (seqlib/ladder/markers.py): "n of m" with any
+               total, "Page n", a bare number on the first / last line; same style, the step (v9).
+* ``content`` -- section order, numbered items going on, the running header's encounter id /
+               date, "continued" at the top of b, a table carried over (seqlib/ladder/content.py, v9).
+* ``pattern`` -- the chart's direction in time and whether a -> b steps along it (v9).
 
 Anchors (design doc 7.4.1): a -> b is forced when a prints "page n of m", b prints "page n+1 of m"
 (same total) and no other page claims either number; likewise for a fax / print banner counter
-in one transmission, unless the pages' printed numbers say otherwise. A page with two candidate
+in one transmission, unless the pages' printed numbers say otherwise; with ``markers`` (v9) also
+for any printed number n -> n + 1 in one style that only one page prints each. A page with two candidate
 anchors in either direction gets none (conflict -> left to the evidence).
 """
 from __future__ import annotations
@@ -36,8 +42,12 @@ GROUP_FEATURES: dict[str, tuple[str, ...]] = {
     "hash": ("hash_sim",),
     "seam": ("seam_p",),
     "v1": ("v1_jump",),
+    "markers": ("mk_both", "mk_kind", "mk_same_style", "mk_step", "mk_follows", "mk_a_last", "mk_b_first"),
+    "content": ("ct_sec_a_last", "ct_sec_b_first", "ct_sec_delta", "ct_item_delta", "ct_item_next", "ct_enc_same",
+                "ct_encdate_same", "ct_b_cont_from", "ct_table_join"),
+    "pattern": ("pt_trend", "pt_with_trend"),
 }
-GROUP_ORDER = ("banner", "dates", "hash", "seam", "v1")
+GROUP_ORDER = ("banner", "dates", "hash", "seam", "v1", "markers", "content", "pattern")
 
 
 def feature_names(groups: Sequence[str]) -> tuple[str, ...]:
@@ -53,7 +63,11 @@ def _days(a: str, b: str) -> Optional[float]:
 
 def extra_matrix(pairs: Sequence[tuple[int, int]], facts: ChartFacts, groups: Sequence[str],
                  seam: Optional[dict[tuple[int, int], float]] = None,
-                 v1: Optional[set[tuple[int, int]]] = None) -> np.ndarray:
+                 v1: Optional[set[tuple[int, int]]] = None, markers: Optional[dict] = None,
+                 contents: Optional[dict] = None, trend: Optional[float] = None) -> np.ndarray:
+    from .content import content_pair, pattern_pair
+    from .markers import marker_pair
+
     names = feature_names(groups)
     col = {n: i for i, n in enumerate(names)}
     X = np.full((len(pairs), len(names)), np.nan, dtype=np.float32)
@@ -97,13 +111,23 @@ def extra_matrix(pairs: Sequence[tuple[int, int]], facts: ChartFacts, groups: Se
             p = seam.get((a, b))
             if p is not None:
                 x[col["seam_p"]] = p
+        found: dict[str, float] = {}
+        if "markers" in groups and markers is not None:
+            found.update(marker_pair(markers.get(a), markers.get(b)))
+        if "content" in groups and contents is not None:
+            found.update(content_pair(contents.get(a), contents.get(b)))
+        if "pattern" in groups:
+            found.update(pattern_pair(facts.dos.get(a), facts.dos.get(b), trend))
+        for name, value in found.items():
+            x[col[name]] = value
     return X
 
 
 def find_anchors(printed: dict[int, tuple[int, int]], facts: Optional[ChartFacts],
-                 use_banner: bool = True) -> list[tuple[int, int]]:
-    """Forced links (page numbers), from unambiguous "n of m" -> "n+1 of m" (and banner) runs."""
-    proposals: list[tuple[int, int]] = []
+                 use_banner: bool = True, markers: Sequence[tuple[int, int]] = ()) -> list[tuple[int, int]]:
+    """Forced links (page numbers), from unambiguous "n of m" -> "n+1 of m" (and banner) runs;
+    ``markers``: v9's marker anchors (seqlib/ladder/markers.marker_anchors), proposed alongside."""
+    proposals: list[tuple[int, int]] = list(markers)
     holders: dict[tuple[int, int], list[int]] = defaultdict(list)
     for page, (n, m) in printed.items():
         holders[(m, n)].append(page)

@@ -1,4 +1,4 @@
-"""Every method's latest result, side by side, for the experiment ladder (scan, v1, v2, v3 ...).
+"""Every method's latest result, side by side (scan, v1, v5, v8, v9 ...).
 
 Reads <root>/eval/<tag>_<split>_<time>/summary.json for each output root given and prints one
 row per (root, method): pages, review-UI accuracy (strict), position, successor (adjacency),

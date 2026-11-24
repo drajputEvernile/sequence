@@ -18,9 +18,9 @@ editing this file, copy it and point SEQ_CONFIG at the copy:
     $env:SEQ_CONFIG = "D:\\sequence_cfg\\config_trainbox.py"    (PowerShell)
     export SEQ_CONFIG=/data/sequence/config_trainbox.py          (Linux)
 
-Order of work (README.md):
-    check_inputs.py -> inventory.py -> import_ocr.py -> make_split.py -> analyze_gt.py
-    -> evaluate.py (scan, v1_csv, v1) -> train_v2.py -> evaluate.py (v2)
+Order of work (README.md, steps.txt):
+    check_inputs.py -> inventory.py -> import_ocr.py -> make_split.py -> make_shuffle_test.py
+    -> train.py (on the training shuffle set) -> evaluate.py -> link_report.py / shuffle_report.py
 """
 from pathlib import Path
 
@@ -93,34 +93,17 @@ SPLIT_SEED = 13
 # =============================================================================================
 # 4. Sequencing models
 # =============================================================================================
-V2_MODEL_PATH = REPO / "models" / "v2" / "v2_pair_scorer.joblib"
-# v3: evidence model with no scan inputs + the tuned move margin (scripts/train_v3.py).
-V3_MODEL_PATH = REPO / "models" / "v3" / "v3_model.joblib"
-# v4, v5, v6 (scripts/train_ladder.py): LADDER_MODEL_DIR\<version>\model.joblib.
+# The versions (seqlib/versions.py: v5, v8, v9; scripts/train.py): LADDER_MODEL_DIR\<version>\model.joblib.
 LADDER_MODEL_DIR = REPO / "models"
-# v6's seam cross-encoder (scripts/train_seam.py). SEAM_BASE_MODEL_PATH: a local copy of a small
+# The seam cross-encoder of v8 / v9 (scripts/train_seam.py). SEAM_BASE_MODEL_PATH: a local copy of a small
 # pre-trained model to fine-tune, e.g. sentence-transformers/all-MiniLM-L6-v2 (None = not set).
 SEAM_BASE_MODEL_PATH = None
 SEAM_MODEL_PATH = REPO / "models" / "seam"
 SEAM_DEVICE = "cpu"              # "cuda" on the GPU machine
-# Which pages are set aside (blank / junk / duplicate -> J series), learned from the truth
-# (scripts/train_setaside.py; used by evaluate.py --set-aside model).
-SETASIDE_MODEL_PATH = REPO / "models" / "setaside" / "setaside_model.joblib"
-# Optional local sentence-embedding model folder (e.g. all-MiniLM-L6-v2). None = off.
-EMBEDDING_MODEL_PATH = None
-EMBEDDING_DEVICE = "cpu"         # "cuda" on a GPU machine
 # v1's rule files (copied from the pipeline's core-pipeline/resources/canon).
 V1_CANON_DIR = REPO / "seqlib" / "v1" / "resources"
 
 # =============================================================================================
-# 5. Local OCR for photographed pages (scripts/ocr_photos.py)
-# =============================================================================================
-TESSERACT_CMD = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-TESSERACT_LANG = "eng"
-PHOTO_INPUT_ROOT = REPO / "workspace" / "photos"
-PHOTO_OUTPUT_ROOT = REPO / "workspace" / "photo_charts"
-
-# =============================================================================================
-# 6. Outputs
+# 5. Outputs
 # =============================================================================================
 OUTPUT_ROOT = REPO / "outputs"

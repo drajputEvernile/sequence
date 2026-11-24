@@ -1,19 +1,13 @@
-# Core (v1, evaluation, v2 baseline). Python 3.10 - 3.13.
+# Core (v1, evaluation, v5 / v8 / v9). Python 3.10 - 3.13.
 numpy>=1.24
-scikit-learn>=1.3
+scikit-learn>=1.3      # brings scipy (the cover solver)
 joblib>=1.3
 openpyxl>=3.1          # ground-truth .xlsx sheets
-
-# Local OCR of photographed pages (scripts/ocr_photos.py); Tesseract itself is a separate
-# install (config.TESSERACT_CMD).
-Pillow>=10.0
+Pillow>=10.0           # header image fingerprint (v8, v9)
 
 # Tests
 pytest>=7.4
 
-# Optional, only if config.EMBEDDING_MODEL_PATH is set (embedding features in v2):
-# sentence-transformers>=2.7
-# torch            (install the CUDA build on the GPU training machine)
-
-# Building SEQUENCING_OVERVIEW.pdf (docs/build_pdf.py):
+# The seam text model (v8, v9): requirements-seam.txt
+# Building the PDF documents (docs/build_pdf.py):
 # reportlab>=4.0

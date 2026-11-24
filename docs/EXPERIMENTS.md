@@ -1,73 +1,79 @@
-# Experiment ladder
+# Sequencing experiments
 
-Each version adds one idea from `page_assembly_v3_design_and_build.md` (the team's design), so
-every gain can be attributed. Every version is scored the same three ways:
+The goal (agreed 2026-11-24): with blank / junk taken as perfect (`--set-aside truth`),
 
-| Check | Data | Must |
+1. **≥ 95% position accuracy on the shuffle test** -- every page at exactly its right place, on
+   documents put out of order by up to 3 operations (swap, moved page, moved block, reversed block);
+2. then **≈ 99% position accuracy on the real (unshuffled) documents** -- no harm.
+
+Position accuracy is what the review UI counts: one page out of place shifts every page after it.
+
+## Versions kept (seqlib/versions.py)
+
+All share one engine (seqlib/v3): an **evidence model** that never sees where a page was scanned
+(P(b directly follows a) from what the pages say), a **move margin** added to every link that is not
+the scan order's (a page leaves its scan place only when the evidence beats it), and a **solver**.
+
+| Version | What it is | Why kept |
 |---|---|---|
-| Repair | `workspace\shuffle_eval` (92 shuffled test documents), `--set-aside truth` | beat v1 (position 60.4%, successor 81.2%) |
-| No harm | real test documents (97), `--set-aside truth` | stay at scan order's 98.7% position / 99.7% successor (design gate RG3) |
-| Review-UI score | real test documents, `--set-aside pipeline` / `model` | the number the 90% target may refer to (74.5% today) |
+| scan, v1, v1_csv | do nothing; production's rules re-run / as production wrote them | baselines |
+| **v5** | page-number and fax-banner **anchors** (forced links) + banner features + each page's own **date** read from its OCR; one tuned margin | best on real documents (98.95%) -- the safe default |
+| **v8** | v5 + header image fingerprint + the **seam** text model + **v1's rules** as evidence; a **gate** (P(document out of order)) picks a low or high margin per document; both solvers | best repair so far |
+| **v9** | v8 + everything below; tuned on **position** | the attempt at the 95% target |
 
-`python scripts\compare.py` prints all of them side by side.
+### What v9 adds
 
-| Version | Idea (design section) | Status |
-|---|---|---|
-| scan | do nothing | measured |
-| v1 | production: printed "page n of m" families, at most 5 places | measured: repair 60.4% / no harm 98.7% |
-| v2 | one pair model with scan position among its inputs + search | measured: repair 56.6% / no harm 98.7%. Diagnosis: it learned "scan neighbour = next page" (first choice for moved pages 6%) |
-| **v3** | evidence model with **no scan inputs** + scan order as a **tuned move margin** (RC1, FR6, 7.5.1); solver `search` or path `cover` with cycle repair (7.5) | built, to run |
-| **v4** | v3 + page-number and fax/print **banner anchors** (forced links, 7.4.1) + banner features (7.1.1) | built, to run |
-| **v5** | v4 + each page's **own DOS read from its OCR** (the pipeline's DOS rules); the model learns from the truth whether order follows dates | built, to run |
-| **v6** | v5 + **header image fingerprint** (7.1.2) + **seam cross-encoder** (fine-tuned small language model, 8.3) | built, to run (needs a local base model; GPU recommended) |
-| **v7** / **v7s** | v5's (v7) or v6's (v7s) evidence + a **gate**: P(document out of order) from document-level signs on its scan order (anchors the scan order breaks, weak scan links, gain of the best order over scan, dates jumping back, fax counters breaking). Flagged documents get a low margin, others a high one (`train_v7.py`) | built, to run |
-| **v8** | everything: v6's evidence + **v1's rules as evidence** (its departures from scan order: a pair feature, extra candidates, a gate sign) + the gate + **both solvers** (search and cover, the cheaper order wins). Evaluate also with `--set-aside model` for the review-UI score | built, to run |
-| set-aside | blank / junk / duplicate learned from the truth (review-UI score) | built (`train_setaside.py`), to run |
+- **Page numbers in every printed form** (seqlib/ladder/markers.py). v1 and v5 read only "page n of m"
+  with m ≤ 20. v9 also reads "n of m" with any total, "Page n" / "Pg. n" with no total, and a bare
+  number alone on the first / last line ("3", "- 3 -", "[3]"). Each has a *style* (kind, band, the line
+  with digits masked, the total), so numbers are compared within one way of numbering. They are pair
+  features, candidates (the page with the next number is always considered), and anchors when
+  number n and n + 1 of a style are each printed by one page only.
+- **Content clues** (seqlib/ladder/content.py): section order in a note (chief complaint -> HPI -> ... ->
+  assessment / plan -> signature), numbered items going on ("14." -> "15."), the running header's
+  encounter id / visit date, "(continued)" at the top of the page, a table carried over the break.
+- **The chart's pattern in time**: whether the chart runs forwards or backwards by date (read from
+  its scan order, which a few operations leave mostly intact) and whether a -> b steps along it.
+- **Reversed runs are cheap to undo.** A link to the page scanned just *before* pays a quarter of the
+  margin: undoing a reversed block of k pages used to cost k + 1 margins, now 2 + (k - 1) / 4.
+- **Swaps.** The search can swap two pages anywhere (a swap is two moves that only pay off together).
+- **Tuned on position accuracy** (the margins and the gate), with in-order training documents kept
+  at ≥ 99.5% position.
+- **One more gate sign**: printed numbers of one style that the scan order does not step by one.
 
-Differences from the design document, given the data on the training machine:
+## Tuning
 
-- **M1 vs the review UI.** The review UI compares each page's exact number (`groundTruth.ts`), not adjacency. Adjacency = `successor_accuracy`; the review-UI figure = `strict_page_accuracy`.
-- **No encounter labels** (`encounter_review`) in the exported truth: the partition metrics (M2, M3, M5, M6) and the same-document model need a stand-in (pipeline documents, or DOS + type).
-- **Dates.** Almost no page carries its own DOS in the outputs CSV (most are carried across the document, which v2+ ignores because it depends on the order). Date features, F1 and Step 7 need per-page DOS re-read from the OCR (v5).
-- **Models.** scikit-learn's HistGradientBoosting stands in for LightGBM (same family); scipy is used for the assignment solver.
+Every version's margin (and the gate for v8 / v9) is tuned on **out-of-fold** scores: the training
+documents are split into 5 folds, each scored by an evidence model fitted on the other four.
+Tuning sees only the pairs an unseen document would have (candidates, anchors, v1's jumps, next
+printed number / list item). With the seam, the seam model's own half is left out of tuning.
 
-Not built, and why:
+## Diagnostics (counts only)
 
-- **Start / end (boundary) models (7.3.2), same-document model, document merge (7.6) and document
-  ordering by DOS (7.7)** need encounter labels; the exported truth has none. v5's date features
-  let the evidence model learn any date ordering the truth has instead.
-- **Forbidden edges F1, F2, F4, F5 (7.4.2)** belong to the design's multi-chain formulation. Here
-  the chart is one path, where two different-date or demographics / visit pages may legitimately
-  sit side by side at a document boundary; the page-number anchors carry the F4 / F5 logic.
-
-## Tuning (all versions, since v7)
-
-Every version's margin (and v7 / v8's gate) is tuned on **out-of-fold** scores: the training
-documents are split into 5 folds, each scored by an evidence model fitted on the other four, so
-all ~390 training documents count (before: a 20% hold-out, ~78 documents, ~23 of them in order).
-Tuning sees only the pairs an unseen document would have (candidates, anchors, v1's jumps; before,
-every true pair was among them, which flattered the evidence). With the seam (v6, v7s, v8) the
-seam model's own half is left out of tuning. v3 to v6 trained before this change keep working;
-retrain them (`train_ladder.py`) to compare like with like.
+- `scripts/link_report.py` -- every true link of the shuffle test: within a document or between
+  documents, anchored or not, and **the strongest clue the two pages give** (printed number, bare
+  number, fax counter, list, sentence / table carried over, encounter id, same date, section order,
+  or none). Per method: share of broken links repaired, of unbroken links kept. The broken links
+  with no clue are the part no content model can be expected to repair.
+- `scripts/shuffle_report.py` -- position / successor / fully repaired by operation kind, document
+  size and pages moved.
+- `scripts/explain_errors.py` -- real documents: how many are out of order, and which rules explain it.
 
 ## Results so far (test documents; truth set-aside)
 
-| method | shuffled: position | successor | perfect | real: position | successor | perfect |
-|---|---|---|---|---|---|---|
-| scan | 56.1% | 78.9% | 0.0% | 98.72% | 99.74% | 97.94% |
-| v1 | 60.4% | 81.2% | 8.7% | 98.72% | 99.74% | 97.94% |
-| v2 | 56.6% | 79.9% | 1.1% | 98.72% | 99.74% | 97.94% |
-| v3 (m 6) | 56.1% | 78.9% | 0.0% | 98.72% | 99.74% | 97.94% |
-| v4 (m 3) | 59.0% | 81.1% | 5.4% | 98.95% | 99.80% | 97.94% |
-| v5 (m 3) | 59.9% | 81.2% | 6.5% | 98.95% | 99.80% | 97.94% |
-| v6 (m 3) | 59.1% | 81.3% | 7.6% | 98.95% | 99.80% | 97.94% |
-| v6 (m 1.5) | 61.2% | 82.2% | 9.8% | 98.84% | 99.71% | 96.91% |
+| method | shuffled: position | successor | perfect | real: position | perfect |
+|---|---|---|---|---|---|
+| scan | 56.1% | 78.9% | 0.0% | 98.72% | 97.94% |
+| v1 | 60.4% | 81.2% | 8.7% | 98.72% | 97.94% |
+| v5 | 59.9% | 81.2% | 6.5% | 98.95% | 97.94% |
+| v7 (dropped) | 61.9% | 82.0% | 10.9% | 98.21% | 96.91% |
+| v8 | 61.8% | 83.9% | 16.3% | 97.96% | 96.91% |
+| v9 | to run | | | | |
 
-Read: anchors (v4) and own dates (v5) help; the text evidence (v3, seam) adds little. A low margin
-repairs more but breaks an in-order real document -- the trade-off v7's gate is built to remove.
-On real documents the review-UI score (strict, pipeline set-aside: 74.5%) is limited by the
-set-aside (blank / junk) disagreement, not by the order: the set-aside model is the larger lever.
+Dropped after measuring (code in git history): v2 (pair model with scan inputs: learned "scan
+neighbour = next page"), v3 / v4 / v6 / v7 / v7s (steps of the ladder, superseded by v5 / v8),
+the set-aside model and photo OCR (blank / junk is taken as perfect for now).
 
-`scripts/link_report.py` splits the shuffle test's true links into within-document and boundary
-links (by date): boundary links between separate documents are largely beyond what page content
-can tell, so their share of the broken links bounds what any version can repair.
+Link report (v8): of 3,424 true links the shuffle broke 721; only 36 had a page-number anchor (all
+repaired since v4); within-document links: 32% repaired. v8's real-data loss is one in-order
+document the gate flagged (0.99) and scrambled.

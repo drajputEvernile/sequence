@@ -15,6 +15,11 @@ gets P = FLOOR.
 
 * ``best`` -- both, and the cheaper order (v8).
 
+v9's switches: ``reverse_share`` -- a link to the page scanned just before (a -> a - 1: a reversed run
+read backwards) pays that share of the margin, so undoing a reversed block of k pages costs two
+margins and k - 1 small ones instead of k + 1 margins; ``swaps`` -- the search also swaps two pages
+anywhere (a swap is two moves that only pay off together).
+
 Anchors (v4+, design doc 7.4.1): a forced link a -> b costs nothing and every other link out of a
 or into b costs ANCHOR_PENALTY more (finite, so the search can still compare orders); the search
 then starts from the scan order with each anchored chain kept together.
@@ -28,13 +33,17 @@ from seqlib.v2.decode import EXACT_MAX, cost_matrix, held_karp, local_search, pa
 ANCHOR_PENALTY = 25.0
 
 
-def v3_costs(n: int, edge: dict[tuple[int, int], float], margin: float) -> np.ndarray:
+def v3_costs(n: int, edge: dict[tuple[int, int], float], margin: float, reverse_share: float = 1.0) -> np.ndarray:
     cost = cost_matrix(n, edge)
     if margin:
         scan = np.zeros_like(cost, dtype=bool)
         for a in range(n + 1):
             scan[a, (a + 1) % (n + 1)] = True  # 0->1, 1->2, ..., n->0
-        cost = np.where(scan | ~np.isfinite(cost), cost, cost + margin)
+        extra = np.full(cost.shape, float(margin))
+        if reverse_share != 1.0:
+            for a in range(2, n + 1):
+                extra[a, a - 1] = margin * reverse_share  # a reversed run, read backwards
+        cost = np.where(scan | ~np.isfinite(cost), cost, cost + extra)
     return cost
 
 
@@ -87,10 +96,10 @@ def apply_anchors(cost: np.ndarray, anchors) -> np.ndarray:
 
 
 def decode_v3(n: int, edge: dict[tuple[int, int], float], margin: float, solver: str = "search",
-              max_block: int = 40, anchors=()) -> list[int]:
+              max_block: int = 40, anchors=(), reverse_share: float = 1.0, swaps: bool = False) -> list[int]:
     if n == 0:
         return []
-    cost = v3_costs(n, edge, margin)
+    cost = v3_costs(n, edge, margin, reverse_share)
     begin = list(range(1, n + 1))
     if anchors:
         from seqlib.ladder.extra import anchor_order
@@ -99,11 +108,11 @@ def decode_v3(n: int, edge: dict[tuple[int, int], float], margin: float, solver:
         begin = anchor_order(n, anchors)
     if n <= EXACT_MAX:
         return held_karp(cost)
-    searched = local_search(cost, begin, max_block=max_block) if solver in ("search", "best") else None
+    searched = local_search(cost, begin, max_block=max_block, swaps=swaps) if solver in ("search", "best") else None
     covered = None
     if solver in ("cover", "best"):
         start = _cover(cost)
-        polished = local_search(cost, start, max_block=max_block)
+        polished = local_search(cost, start, max_block=max_block, swaps=swaps)
         covered = polished if path_cost(polished, cost) <= path_cost(start, cost) else start
     if searched is None:
         return covered

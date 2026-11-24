@@ -12,7 +12,7 @@ import numpy as np
 from seqlib.io.chart import Chart
 from seqlib.io.ground_truth import ChartTruth
 from seqlib.v2.decode import cost_matrix, path_cost
-from seqlib.v3.model import ChartPairs, EvidenceModel, V3Settings, _fit, chart_pairs
+from seqlib.v3.model import ChartPairs, EvidenceModel, V3Settings, _fit, chart_pairs, decode_options
 from seqlib.v3.tuning import choose_margin, choose_policy, cross_fit, decode_pages, graph, margin_table
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ GATE_FEATURES = (
     "date_back_jumps",        # scan neighbours whose own dates go back more than 30 days
     "banner_breaks",          # scan neighbours in one fax transmission whose counter does not step by 1
     "v1_jumps",               # links v1's rules make against the scan order (v8)
+    "marker_breaks",          # scan neighbours printing numbers in one style that do not step by 1 (v9)
 )
 
 
@@ -70,12 +71,16 @@ def gate_features(r: ChartPairs, g, settings: V3Settings, order0: Sequence[int])
     banner = (float(np.sum((np.nan_to_num(same_tx, nan=0.0) == 1) & (np.nan_to_num(step, nan=1.0) != 1)))
               if same_tx is not None else np.nan)
     v1 = float(len(r.extra_candidates)) if "v1" in settings.groups else np.nan
+    marks = getattr(r, "markers", None) or {}
+    marker_breaks = (float(sum(1 for a, b in zip(pages, pages[1:]) if a in marks and b in marks
+                               and marks[a].style == marks[b].style and marks[b].number != marks[a].number + 1))
+                     if "markers" in settings.groups else np.nan)
     return np.array([
         np.log1p(n), len(anchors), broken, broken / len(anchors) if anchors else 0.0,
         scan_cost / links, (scan_cost - best_cost) / links,
         sum(succ0[k] != nxt(k) for k in range(links)) / links,
         float(np.mean(scan_p < 0.1)), float(scan_p.min()), strong, strong / links,
-        date_back, banner, v1,
+        date_back, banner, v1, marker_breaks,
     ], dtype=np.float64)
 
 
@@ -153,13 +158,28 @@ def train_v7(examples: Iterable[tuple[Chart, ChartTruth]], settings: V3Settings,
     they are left out of tuning too (the seam has seen them)."""
     margins = tuple(sorted(set(margins) | {0.0}))
     fit_exclude = fit_exclude or set()
+    from seqlib.v3.model import true_pairs
+    from seqlib.v3.tuning import prediction_view
+
     rows: list[ChartPairs] = []
     truths: dict[str, list[int]] = {}
+    recall = [0, 0]
+    anchor_stats: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # source -> [anchors, true]
     for chart, truth in examples:
         order = [p for p in truth.main_order if p in chart.by_number()]
         if len(order) < 2:
             continue
-        rows.append(chart_pairs(chart, order, settings, truth_order=order, seam=seam))
+        r = chart_pairs(chart, order, settings, truth_order=order, seam=seam)
+        pos = true_pairs(order)
+        recall[0] += len(pos & set(prediction_view(r, settings).pairs))
+        recall[1] += len(pos)
+        for a, b in r.anchors:
+            ma, mb = r.markers.get(a), r.markers.get(b)
+            source = (f"marker:{ma.kind}" if ma is not None and mb is not None and ma.style == mb.style
+                      and mb.number == ma.number + 1 else "n of m / banner")
+            anchor_stats[source][0] += 1
+            anchor_stats[source][1] += (a, b) in pos
+        rows.append(r)
         truths[chart.name] = order
     usable = [r for r in rows if r.chart not in fit_exclude]
     if len(usable) < 2:
@@ -168,7 +188,9 @@ def train_v7(examples: Iterable[tuple[Chart, ChartTruth]], settings: V3Settings,
 
     # 1. out-of-fold evidence, every document decoded at every margin, its gate signs
     oof = cross_fit(usable, settings, folds)
-    names, succ, orders, graphs = margin_table(oof, truths, margins, settings.solver)
+    objective = getattr(settings, "objective", "successor")
+    names, succ, orders, graphs = margin_table(oof, truths, margins, settings.solver, objective,
+                                               decode_options(settings))
     feats = np.array([gate_features(oof[n][0], graphs[n], settings, orders[n][0.0]) for n in names])
     moved = np.array([truths[n] != sorted(truths[n]) for n in names])
     in_order = ~moved
@@ -193,6 +215,12 @@ def train_v7(examples: Iterable[tuple[Chart, ChartTruth]], settings: V3Settings,
         "documents": len(rows), "tuned_on_documents": len(names),
         "out_of_order_documents": int(moved.sum()), "in_order_documents": int(in_order.sum()),
         "folds": folds, "solver": settings.solver, "harm_floor": settings.harm_floor,
+        "tuned_on": objective, "decode": decode_options(settings),
+        "candidate_recall": round(recall[0] / recall[1], 4) if recall[1] else None,
+        "anchors_found": sum(v[0] for v in anchor_stats.values()),
+        "anchors_correct": (round(sum(v[1] for v in anchor_stats.values()) / sum(v[0] for v in anchor_stats.values()), 4)
+                            if anchor_stats else None),
+        "anchors_by_source": {k: {"anchors": v[0], "correct": round(v[1] / v[0], 4)} for k, v in sorted(anchor_stats.items())},
         "gate_auc_out_of_fold": auc,
         "gate_mean_p": {"out_of_order": round(float(gate_p[moved].mean()), 4) if moved.any() else None,
                         "in_order": round(float(gate_p[in_order].mean()), 4) if in_order.any() else None},

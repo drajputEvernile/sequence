@@ -45,7 +45,7 @@ def main() -> int:
     ap.add_argument("--unchanged", type=float, default=0.0,
                     help="share of the chosen documents left in order as a control (e.g. 0.1)")
     ap.add_argument("--role", choices=("test", "train"), default="test",
-                    help="what the shuffled documents are for: a test set, or a set to train v2 on")
+                    help="what the shuffled documents are for: a test set, or a set to train on")
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--out", default=str(cfg.REPO / "workspace" / "shuffle_test"))
     args = ap.parse_args()
@@ -86,7 +86,7 @@ def main() -> int:
         "documents_by_split": dict(Counter(splits.get(m.doc, "?") for m in made)),
     }
     print(json.dumps(summary, indent=2))
-    then = ("  python scripts\\train_v2.py\n" if args.role == "train" else
+    then = ("  python scripts\\train.py --version v9\n" if args.role == "train" else
             "  python scripts\\evaluate.py --method scan --set-aside truth\n"
             "  python scripts\\evaluate.py --method v1 --set-aside truth\n")
     print(f"\n-> {out}\n\nNext:\n  $env:SEQ_CONFIG = \"{config_path}\"\n  python scripts\\import_ocr.py\n"

@@ -4,14 +4,11 @@
     python scripts/evaluate.py --method v1_csv          # v1 as production wrote it (the outputs CSV's seq)
     python scripts/evaluate.py --method v1              # v1's engines re-run here on the pipeline's documents
     python scripts/evaluate.py --method v1 --documents recompute   # ... with continuity re-run too
-    python scripts/evaluate.py --method v2              # needs config.V2_MODEL_PATH (scripts/train_v2.py)
-    python scripts/evaluate.py --method v2 --oracle-junk     # order the truth's Main pages (ordering alone)
-    python scripts/evaluate.py --method v7              # gated (scripts/train_v7.py); v7s = with the seam; v8 = everything
+    python scripts/evaluate.py --method v9 --set-aside truth       # a trained version (scripts/train.py)
 
-    --set-aside pipeline (default) | model | truth   which pages are set aside (the J series):
-        the pipeline's blank_junk_flag, the set-aside model (scripts/train_setaside.py), or the
-        truth's own (an upper bound: what ordering alone scores)
-    --split test (default) | train | all             all = train + test (the usable documents)
+    --set-aside pipeline (default) | truth   which pages are set aside (the J series): the pipeline's
+        blank_junk_flag, or the truth's own -- blank / junk taken as perfect, so only the order counts
+    --split test (default) | train | all     all = train + test (the usable documents)
 
 Writes <OUTPUT_ROOT>/eval/<method>_<split>_<time>/: summary.json, per_chart.csv, errors.txt.
 """
@@ -29,53 +26,33 @@ from seqlib.io.chart import load_chart
 from seqlib.io.ground_truth import load_ground_truth
 from seqlib.settings import cfg
 from seqlib.v1.runner import run_scan_order, run_v1, run_v1_csv
+from seqlib.versions import VERSIONS
+
+METHODS = ("scan", "v1", "v1_csv", *VERSIONS)
 
 
-def build_method(name: str, documents: str, oracle: bool, v2_start: str = "scan", margin=None, solver=None):
+def build_method(name: str, documents: str = "csv"):
     if name == "scan":
-        return lambda chart, truth: run_scan_order(chart)
+        return lambda chart: run_scan_order(chart)
     if name == "v1":
-        return lambda chart, truth: run_v1(chart, documents)
+        return lambda chart: run_v1(chart, documents)
     if name == "v1_csv":
-        return lambda chart, truth: run_v1_csv(chart)
-    if name == "v2":
-        from seqlib.v2.features import Embedder
-        from seqlib.v2.model import PairScorer
-        from seqlib.v2.runner import run_v2
+        return lambda chart: run_v1_csv(chart)
+    from seqlib.ladder import load_seam
+    from seqlib.versions import is_gated, load_model
 
-        scorer = PairScorer.load(cfg.V2_MODEL_PATH)
-        embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
-        return lambda chart, truth: run_v2(chart, scorer, embedder, truth.main_order if oracle else None,
-                                           start=v2_start)
-    if name in ("v3", "v4", "v5", "v6"):
-        from seqlib.ladder import load_seam, model_path
-        from seqlib.v2.features import Embedder
-        from seqlib.v3.model import V3Model
-        from seqlib.v3.runner import run_v3
-
-        model = V3Model.load(model_path(name))
-        seam = load_seam(required=True) if "seam" in model.settings.groups else None
-        print(f"{name}: margin {model.margin if margin is None else margin}, solver {solver or model.settings.solver}, "
-              f"evidence {list(model.settings.groups) or 'base'}, anchors {model.settings.anchors}")
-        embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
-        return lambda chart, truth: run_v3(chart, model, embedder, truth.main_order if oracle else None,
-                                           margin=margin, solver=solver, seam=seam)
-    if name in ("v7", "v7s", "v8"):
-        from seqlib.ladder import load_seam
-        from seqlib.v2.features import Embedder
-        from seqlib.v7 import model_path as v7_path
-        from seqlib.v7.model import V7Model
+    model = load_model(name)
+    seam = load_seam(required=True) if "seam" in model.settings.groups else None
+    if is_gated(name):
         from seqlib.v7.runner import run_v7
 
-        if margin is not None or solver is not None:
-            raise SystemExit("v7 / v8 pick their own margin per document: --margin / --solver do not apply")
-        model = V7Model.load(v7_path(name))
-        seam = load_seam(required=True) if "seam" in model.settings.groups else None
         print(f"{name}: gate threshold {model.threshold}, margins {model.margin_low} (flagged) / "
               f"{model.margin_high} (others), evidence {list(model.settings.groups)}")
-        embedder = Embedder(cfg.EMBEDDING_MODEL_PATH, cfg.EMBEDDING_DEVICE) if cfg.EMBEDDING_MODEL_PATH else None
-        return lambda chart, truth: run_v7(chart, model, embedder, truth.main_order if oracle else None, seam=seam)
-    raise SystemExit(f"unknown method {name}")
+        return lambda chart: run_v7(chart, model, seam=seam)
+    from seqlib.v3.runner import run_v3
+
+    print(f"{name}: margin {model.margin}, solver {model.settings.solver}, evidence {list(model.settings.groups)}")
+    return lambda chart: run_v3(chart, model, seam=seam)
 
 
 def set_aside_by_truth(chart, truth) -> None:
@@ -87,30 +64,19 @@ def set_aside_by_truth(chart, truth) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--method", required=True, choices=("scan", "v1", "v1_csv", "v2", "v3", "v4", "v5", "v6", "v7", "v7s", "v8"))
+    ap.add_argument("--method", required=True, choices=METHODS)
     ap.add_argument("--split", choices=("test", "train", "all"), default="test")
     ap.add_argument("--documents", choices=("csv", "recompute"), default="csv",
                     help="v1: where its continuity documents come from")
-    ap.add_argument("--oracle-junk", action="store_true",
-                    help="v2: order the truth's Main pages, so blank / junk errors do not count")
-    ap.add_argument("--set-aside", choices=("pipeline", "model", "truth"), default="pipeline",
+    ap.add_argument("--set-aside", choices=("pipeline", "truth"), default="pipeline",
                     help="which pages are set aside (J series)")
-    ap.add_argument("--v2-start", choices=("scan", "v1"), default="scan",
-                    help="v2: the order its search begins from (v1 keeps v1's page-number repairs)")
-    ap.add_argument("--margin", type=float, default=None, help="v3-v6: override the trained move margin")
-    ap.add_argument("--solver", choices=("search", "cover", "best"), default=None, help="v3-v6: override the solver")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
     if args.method == "v1_csv" and getattr(cfg, "SHUFFLE_TEST", False):
         raise SystemExit("v1_csv is production's answer for the original order: on a shuffle test use "
-                         "--method scan / v1 / v2")
+                         "--method scan / v1 / a version")
     if args.method == "v1_csv" and args.set_aside != "pipeline":
-        raise SystemExit("v1_csv is production's own answer; use --method scan / v1 / v2 with --set-aside")
-    setaside_model = None
-    if args.set_aside == "model":
-        from seqlib.v2.setaside import SetAsideModel
-
-        setaside_model = SetAsideModel.load(cfg.SETASIDE_MODEL_PATH)
+        raise SystemExit("v1_csv is production's own answer; use --method scan / v1 / a version with --set-aside")
 
     truths = load_ground_truth(cfg.GROUND_TRUTH_PATH)
     split = read_split(cfg.SPLIT_FILE)
@@ -118,14 +84,10 @@ def main() -> int:
     names = [n for n in names if n in truths and not truths[n].problems()]
     if args.limit:
         names = names[: args.limit]
-    method = build_method(args.method, args.documents, args.oracle_junk, args.v2_start, args.margin, args.solver)
+    method = build_method(args.method, args.documents)
 
     tag = (args.method
            + (f"-{args.documents}" if args.method == "v1" else "")
-           + ("-from_v1" if args.method == "v2" and args.v2_start == "v1" else "")
-           + (f"-m{args.margin:g}" if args.method in ("v3", "v4", "v5", "v6") and args.margin is not None else "")
-           + (f"-{args.solver}" if args.method in ("v3", "v4", "v5", "v6") and args.solver else "")
-           + ("-oracle" if args.oracle_junk else "")
            + (f"-setaside_{args.set_aside}" if args.set_aside != "pipeline" else ""))
     out = cfg.OUTPUT_ROOT / "eval" / f"{tag}_{args.split}_{datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
@@ -135,11 +97,9 @@ def main() -> int:
     for k, name in enumerate(names, start=1):
         try:
             chart = load_chart(name)
-            if setaside_model is not None:
-                setaside_model.apply(chart)
-            elif args.set_aside == "truth":
+            if args.set_aside == "truth":
                 set_aside_by_truth(chart, truths[name])
-            result = method(chart, truths[name])
+            result = method(chart)
         except Exception as exc:  # noqa: BLE001
             failed[name] = repr(exc)
             continue

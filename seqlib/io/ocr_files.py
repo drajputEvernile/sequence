@@ -6,8 +6,7 @@
 * ``<chart>_final2.json`` -- Azure Read output the pipeline already saved: ``pages[]`` with
   ``fileName``, ``content`` and ``pagesMeta[0]`` (``height``, ``lines[]`` with ``polygon``).
 
-Nothing here calls an OCR engine. (The local engine for photographed pages is
-``seqlib.local_ocr``; it writes the same ``final2`` shape.)
+Nothing here calls an OCR engine.
 """
 from __future__ import annotations
 

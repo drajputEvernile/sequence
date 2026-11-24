@@ -1,24 +1,23 @@
-"""Print the training report saved inside each trained model (v3 to v8). Scores only -- safe to bring back.
+"""Print the training report saved inside each trained model (seqlib/versions.py). Scores only -- safe to bring back.
 
     python scripts\\show_reports.py                 # the parts that matter, every trained version
     python scripts\\show_reports.py --full          # the whole report
-    python scripts\\show_reports.py v7 v8           # some versions only
+    python scripts\\show_reports.py v8 v9           # some versions only
 """
 import argparse
 import json
 
 import _common  # noqa: F401
 
-from seqlib.ladder import model_path as ladder_path
-from seqlib.v7 import model_path as gated_path
+from seqlib.versions import VERSIONS, is_gated, model_path
 
-VERSIONS = ("v3", "v4", "v5", "v6", "v7", "v7s", "v8")
 KEY = {
     "ladder": ("version", "groups", "documents", "tuned_on_documents", "tuned_in_order", "candidate_recall",
                "anchors_found", "anchors_correct", "chosen_margin", "margin_curve", "unused_evidence"),
     "gated": ("version", "evidence", "documents", "tuned_on_documents", "out_of_order_documents",
               "in_order_documents", "gate_auc_out_of_fold", "gate_mean_p", "gate_signs_used", "chosen",
-              "without_gate", "margin_curve_out_of_fold", "unused_evidence"),
+              "tuned_on", "decode", "without_gate", "margin_curve_out_of_fold", "unused_evidence",
+              "anchors_found", "anchors_correct", "anchors_by_source", "candidate_recall"),
 }
 
 
@@ -30,8 +29,8 @@ def main() -> int:
     import joblib
 
     for v in args.versions:
-        gated = v in ("v7", "v7s", "v8")
-        path = gated_path(v) if gated else ladder_path(v)
+        gated = is_gated(v)
+        path = model_path(v)
         if not path.is_file():
             print(f"== {v}: not trained ({path})")
             continue

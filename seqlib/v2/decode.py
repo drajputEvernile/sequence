@@ -69,8 +69,29 @@ def held_karp(cost: np.ndarray) -> list[int]:
     return order[::-1]
 
 
-def local_search(cost: np.ndarray, start: Sequence[int], max_block: int = 40, max_rounds: int = 200) -> list[int]:
-    """Block moves (with optional reversal) from ``start`` while the path gets cheaper."""
+def _best_swap(cost: np.ndarray, full: list[int]) -> tuple[float, int, int]:
+    """The cheapest swap of two pages at least two places apart: (delta, i, j), positions in ``full``."""
+    arr = np.asarray(full)
+    n = len(full) - 2
+    best = (np.inf, -1, -1)
+    if n < 4:
+        return best
+    v, prev, nxt = arr[1:-1], arr[:-2], arr[2:]  # position k (1..n) -> page, before, after
+    for i in range(n - 2):
+        js = np.arange(i + 2, n)
+        x, y = v[i], v[js]
+        delta = (cost[prev[i], y] + cost[y, nxt[i]] + cost[prev[js], x] + cost[x, nxt[js]]
+                 - cost[prev[i], x] - cost[x, nxt[i]] - cost[prev[js], y] - cost[y, nxt[js]])
+        k = int(np.argmin(delta))
+        if delta[k] < best[0]:
+            best = (float(delta[k]), i + 1, int(js[k]) + 1)
+    return best
+
+
+def local_search(cost: np.ndarray, start: Sequence[int], max_block: int = 40, max_rounds: int = 200,
+                 swaps: bool = False) -> list[int]:
+    """Block moves (with optional reversal) from ``start`` while the path gets cheaper; with
+    ``swaps``, also swaps of two pages anywhere (two moves that only pay off together)."""
     order = list(start)
     n = len(order)
     for _ in range(max_rounds):
@@ -110,9 +131,17 @@ def local_search(cost: np.ndarray, start: Sequence[int], max_block: int = 40, ma
                     k = int(np.argmin(d_rev))
                     if d_rev[k] < best[0]:
                         best = (float(d_rev[k]), ("move", i, j, k, True))
+        if swaps:
+            delta, si, sj = _best_swap(cost, full)
+            if delta < best[0]:
+                best = (delta, ("swap", si, sj))
         if best[1] is None:
             break
         move = best[1]
+        if move[0] == "swap":
+            _, si, sj = move
+            order[si - 1], order[sj - 1] = order[sj - 1], order[si - 1]
+            continue
         block_idx = (move[1] - 1, move[2])  # slice into order
         block = order[block_idx[0]:block_idx[1]]
         if move[0] == "rev":

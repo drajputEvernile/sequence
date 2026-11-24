@@ -1,4 +1,4 @@
-"""Tuning shared by v3 to v8: out-of-fold evidence scores, decoding at each margin, the policy.
+"""Tuning shared by every version: out-of-fold evidence scores, decoding at each margin, the policy.
 
 * **Cross-fitting** -- the training documents are split into folds by name; each fold is scored
   by an evidence model fitted on the others. Every document is tuned on (not a 20% hold-out), and
@@ -24,9 +24,11 @@ def prediction_view(r, settings):
     jumps only (training rows also carry every true pair, which an unseen document would not)."""
     from .model import ChartPairs
 
-    keep = set(candidates(r.cf, settings.window, settings.top_k)) | set(r.anchors) | set(r.extra_candidates)
+    keep = (set(candidates(r.cf, settings.window, settings.top_k)) | set(r.anchors) | set(r.extra_candidates)
+            | set(r.more_candidates))
     idx = [i for i, p in enumerate(r.pairs) if p in keep]
-    return ChartPairs(r.chart, r.cf, [r.pairs[i] for i in idx], r.X[idx], r.y[idx], r.anchors, r.extra_candidates)
+    return ChartPairs(r.chart, r.cf, [r.pairs[i] for i in idx], r.X[idx], r.y[idx], r.anchors, r.extra_candidates,
+                      r.more_candidates, r.markers)
 
 
 def graph(r, probs: np.ndarray):
@@ -39,11 +41,11 @@ def graph(r, probs: np.ndarray):
     return pages, edge, anchors
 
 
-def decode_pages(g, margin: float, solver: str) -> list[int]:
+def decode_pages(g, margin: float, solver: str, options: dict | None = None) -> list[int]:
     from .solve import decode_v3
 
     pages, edge, anchors = g
-    return [pages[k - 1] for k in decode_v3(len(pages), edge, margin, solver, anchors=anchors)]
+    return [pages[k - 1] for k in decode_v3(len(pages), edge, margin, solver, anchors=anchors, **(options or {}))]
 
 
 def fold_of(name: str, folds: int) -> int:
@@ -69,19 +71,22 @@ def cross_fit(rows: list, settings, folds: int) -> dict:
     return out
 
 
-def margin_table(oof: dict, truths: dict, margins: Sequence[float], solver: str):
-    """(names, documents x margins successor accuracy, {name: {margin: order}}, {name: graph})."""
-    from .model import successor_accuracy
+def margin_table(oof: dict, truths: dict, margins: Sequence[float], solver: str, measure: str = "successor",
+                 options: dict | None = None):
+    """(names, documents x margins accuracy -- ``measure``: "successor" or "position" --,
+    {name: {margin: order}}, {name: graph})."""
+    from .model import position_accuracy, successor_accuracy
 
+    score = position_accuracy if measure == "position" else successor_accuracy
     names = sorted(oof)
     succ = np.zeros((len(names), len(margins)))
     orders, graphs = {}, {}
     for i, name in enumerate(names):
         view, probs = oof[name]
         g = graph(view, probs)
-        orders[name] = {m: decode_pages(g, m, solver) for m in margins}
+        orders[name] = {m: decode_pages(g, m, solver, options) for m in margins}
         graphs[name] = g
-        succ[i] = [successor_accuracy(orders[name][m], truths[name]) for m in margins]
+        succ[i] = [score(orders[name][m], truths[name]) for m in margins]
         if (i + 1) % 50 == 0:
             logger.info("%d/%d documents decoded at %d margins", i + 1, len(names), len(margins))
     return names, succ, orders, graphs

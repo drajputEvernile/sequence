@@ -1,7 +1,8 @@
-"""Render docs/SEQUENCING_OVERVIEW.md to SEQUENCING_OVERVIEW.pdf at the repo root.
+"""Render a Markdown document in docs/ to a PDF at the repo root.
 
     pip install reportlab
-    python docs/build_pdf.py
+    python docs/build_pdf.py                                   # TEAM_DISCUSSION
+    python docs/build_pdf.py <NAME> "<Title>"                  # docs/<NAME>.md -> <NAME>.pdf
 
 Handles the Markdown the document uses: # / ## / ### headings, paragraphs, - and 1. lists,
 | tables |, **bold** and `code`.
@@ -21,8 +22,6 @@ from reportlab.lib.units import mm
 from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "docs" / "SEQUENCING_OVERVIEW.md"
-OUT = ROOT / "SEQUENCING_OVERVIEW.pdf"
 
 ACCENT = colors.HexColor("#1F4E79")
 RULE = colors.HexColor("#C9D3DD")
@@ -32,9 +31,10 @@ base = getSampleStyleSheet()
 S = {
     "title": ParagraphStyle("t", parent=base["Title"], fontSize=19, leading=23, textColor=ACCENT, alignment=TA_LEFT,
                             spaceAfter=4),
-    "h2": ParagraphStyle("h2", parent=base["Heading2"], fontSize=13.5, leading=17, textColor=ACCENT, spaceBefore=12,
+    "h2": ParagraphStyle("h2", parent=base["Heading2"], fontSize=13.5, leading=17, textColor=ACCENT, spaceBefore=12, keepWithNext=1,
                          spaceAfter=5),
-    "h3": ParagraphStyle("h3", parent=base["Heading3"], fontSize=11, leading=14, spaceBefore=8, spaceAfter=3),
+    "h3": ParagraphStyle("h3", parent=base["Heading3"], fontSize=11, leading=14, spaceBefore=8, spaceAfter=3,
+                         keepWithNext=1),
     "body": ParagraphStyle("b", parent=base["BodyText"], fontSize=9.6, leading=13.2, spaceAfter=5),
     "meta": ParagraphStyle("m", parent=base["BodyText"], fontSize=8.5, leading=11, textColor=colors.HexColor("#555555"),
                            spaceAfter=8),
@@ -69,10 +69,11 @@ def table(rows: list[list[str]], width: float) -> Table:
     return t
 
 
-def build() -> Path:
-    lines = SRC.read_text(encoding="utf-8").splitlines()
-    doc = SimpleDocTemplate(str(OUT), pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm,
-                            bottomMargin=16 * mm, title="Page Sequencing: v1 and the plan for v2")
+def build(name: str = "TEAM_DISCUSSION", title: str = "Page sequencing and blank / junk: findings and plan") -> Path:
+    src, out = ROOT / "docs" / f"{name}.md", ROOT / f"{name}.pdf"
+    lines = src.read_text(encoding="utf-8").splitlines()
+    doc = SimpleDocTemplate(str(out), pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm,
+                            bottomMargin=16 * mm, title=title)
     width = A4[0] - 36 * mm
     story: list = []
     para: list[str] = []
@@ -142,14 +143,14 @@ def build() -> Path:
         canvas.saveState()
         canvas.setFont("Helvetica", 7.5)
         canvas.setFillColor(colors.HexColor("#777777"))
-        canvas.drawString(18 * mm, 9 * mm, "Page sequencing: v1 and the plan for v2")
+        canvas.drawString(18 * mm, 9 * mm, title)
         canvas.drawRightString(A4[0] - 18 * mm, 9 * mm, f"{doc_.page}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
-    return OUT
+    return out
 
 
 if __name__ == "__main__":
-    print(build())
+    print(build(*sys.argv[1:3]))
     sys.exit(0)

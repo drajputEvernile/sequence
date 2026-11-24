@@ -1,6 +1,6 @@
 """The training machine's flow on synthetic data shaped like it: RecordID_DocumentID folders of
 images and Azure OCR, the pipeline outputs CSV and the truth CSV (with documents the folders lack)
--> inventory -> import_ocr -> v1 / v1_csv / scan -> v2."""
+-> inventory -> import_ocr -> v1 / v1_csv / scan -> the engine."""
 from __future__ import annotations
 
 import json
@@ -133,22 +133,6 @@ def test_v1_csv_v1_and_scan_score(raw):
     assert summarize(got["v1"])["position_accuracy"] >= summarize(got["scan"])["position_accuracy"]
 
 
-def test_v2_trains_on_pipeline_features(raw):
-    from seqlib.io.chart import load_chart
-    from seqlib.v2.features import FEATURES
-    from seqlib.v2.model import train
-    from seqlib.v2.runner import run_v2
-
-    truths = truths_of()
-    keys = sorted(raw)[:N_DOCS]
-    scorer = train((load_chart(k), truths[k]) for k in keys[:7])
-    used = {FEATURES[i] for i in scorer.active}
-    assert used and not {"same_doc_type", "b_type_continued"} & set(FEATURES)  # order-dependent: not read
-    for key in keys[7:]:
-        result = run_v2(load_chart(key), scorer)
-        assert sorted(result.main_order) == sorted(truths[key].main_order)
-
-
 def test_blank_junk_pages_run_their_own_series(tmp_path):
     import csv
 
@@ -175,27 +159,6 @@ def test_blank_junk_pages_run_their_own_series(tmp_path):
     assert t.problems() == []  # a gap leaves the order clear: kept
     assert t.warnings() == ["sequence numbers missing: [1]; page 1 has number 1 but is marked blank / junk / invoice"]
     assert t.main_order == [2]
-
-
-def test_setaside_model_trains_and_applies(raw):
-    from seqlib.eval.metrics import score_chart
-    from seqlib.io.chart import load_chart
-    from seqlib.v1.runner import run_scan_order
-    from seqlib.v2.setaside import SetAsideModel, train
-
-    truths = truths_of()
-    keys = sorted(raw)[:N_DOCS]
-    examples = [(load_chart(k), truths[k]) for k in keys]
-    model = train(examples, folds=3)
-    rep = model.report
-    assert rep["documents"] == N_DOCS and rep["set_aside_in_truth"] == N_DOCS  # one cover page each
-    assert "pipeline_verdict (train, for comparison)" in rep and 0.1 <= model.threshold <= 0.9
-    model.save(cfg.SETASIDE_MODEL_PATH)
-    model = SetAsideModel.load(cfg.SETASIDE_MODEL_PATH)
-    chart = model.apply(load_chart(keys[0]))
-    assert all(p.group_override in ("main", "junk", "blank", "duplicate") for p in chart.pages)
-    s = score_chart(truths[keys[0]], *(lambda r: (r.main_order, r.junk_pages))(run_scan_order(chart)))
-    assert s.pages == len(truths[keys[0]].main_order)
 
 
 def test_truth_set_aside_makes_strict_equal_position(raw):
@@ -331,9 +294,12 @@ def test_shuffle_test_end_to_end_with_its_config(raw, tmp_path):
     assert every["methods"]["scan-setaside_truth"]["repaired"] == 0.0  # scan order repairs nothing
     assert every["methods"]["scan-setaside_truth"]["kept"] == 1.0
     assert sum(c["links"] for c in report["kind"].values()) == every["links"]
+    assert sum(c["links"] for c in report["evidence"].values()) == every["links"]
+    assert "pages not read" not in report["evidence"]
+    assert report["evidence"].get("printed page number (n of m / Page n)", {}).get("links", 0) > 0
 
 
-def test_v2_reads_no_order_dependent_value(raw):
+def test_features_read_no_order_dependent_value(raw):
     from seqlib.io.chart import load_chart
     from seqlib.v2.features import order_free
 
@@ -373,47 +339,6 @@ def test_decoder_can_start_from_a_given_order():
     assert decode(n, probs, start=[1, 2]) == decode(n, probs)  # an invalid start falls back to scan
 
 
-def test_v2_from_v1_and_diagnose_run(raw, tmp_path):
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    from seqlib.eval.inventory import source_files
-    from seqlib.eval.shuffle import CONFIG_TEMPLATE, build, choose
-    from seqlib.io.chart import load_chart
-    from seqlib.io.pipeline_csv import load_pipeline_csv
-    from seqlib.v2.model import train
-    from seqlib.v2.runner import run_v2
-
-    truths = truths_of()
-    keys = sorted(raw)[:N_DOCS]
-    scorer = train((load_chart(k), truths[k]) for k in keys[:7])
-    scorer.save(cfg.V2_MODEL_PATH)
-    for key in keys[7:]:
-        r = run_v2(load_chart(key), scorer, pages=truths[key].main_order, start="v1")
-        assert sorted(r.main_order) == sorted(truths[key].main_order) and r.method == "v2:v1"
-
-    root = Path(__file__).resolve().parents[1]
-    images, ocr = source_files(cfg.RAW_DOCS_ROOT, cfg.OCR_DOCS_ROOT, cfg.DOC_KEY_REGEX)
-    out = tmp_path / "sh"
-    build(out, choose(truths, keys, 4, 4, seed=9), truths, load_pipeline_csv(cfg.PIPELINE_OUTPUT_CSV),
-          cfg.PIPELINE_OUTPUT_CSV, GT, images, ocr, seed=9, max_ops=2)
-    conf = out / "config_shuffled.py"
-    conf.write_text(CONFIG_TEMPLATE.format(main=root / "tests" / "config_test.py", root=out, this=conf), encoding="utf-8")
-    env = {**__import__("os").environ, "SEQ_CONFIG": str(conf)}
-    run = lambda *a: subprocess.run([sys.executable, str(root / "scripts" / a[0]), *a[1:]], env=env,
-                                    capture_output=True, text=True, cwd=root)
-    assert run("import_ocr.py").returncode == 0
-    r = run("diagnose_v2.py", "--importance-rows", "2000")
-    assert r.returncode == 0, r.stdout + r.stderr
-    report = json.loads((out / "outputs" / "diagnose_v2.json").read_text(encoding="utf-8"))
-    assert report["documents"] == 4 and sum(report["model or search"].values()) == 4
-    assert report["importance (drop in average precision when shuffled)"]
-    r = run("evaluate.py", "--method", "v2", "--v2-start", "v1", "--set-aside", "truth")
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert any(d.name.startswith("v2-from_v1-setaside_truth_test_") for d in (out / "outputs" / "eval").iterdir())
-
-
 def test_v3_costs_add_the_margin_off_the_scan_order():
     import numpy as np
 
@@ -447,8 +372,9 @@ def test_v3_trains_tunes_and_runs(raw):
     assert not SCAN_FEATURES & set(model.features)  # no scan input reaches the evidence model
     rep = model.report
     assert [p["margin"] for p in rep["margin_curve"]] == [0.0, 1.0, 3.0] and rep["chosen_margin"] in (0.0, 1.0, 3.0)
-    model.save(cfg.V3_MODEL_PATH)
-    model = V3Model.load(cfg.V3_MODEL_PATH)
+    path = cfg.LADDER_MODEL_DIR / "v3_test" / "model.joblib"
+    model.save(path)
+    model = V3Model.load(path)
     for key in keys[8:]:
         for solver in ("search", "cover"):
             r = run_v3(load_chart(key), model, pages=truths[key].main_order, solver=solver)

@@ -8,7 +8,7 @@ Joins <shuffle folder>/shuffle_manifest.json with the latest evaluation of each 
 * by document size (Main pages) and by how many pages the shuffle moved.
 
     python scripts/shuffle_report.py
-    python scripts/shuffle_report.py --methods scan-setaside_truth v2-setaside_truth
+    python scripts/shuffle_report.py --methods scan-setaside_truth v9-setaside_truth
 
 Writes <OUTPUT_ROOT>/shuffle_report.json. Scores and counts only -- safe to bring back.
 """
