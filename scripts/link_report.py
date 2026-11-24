@@ -95,6 +95,22 @@ def link_evidence(cf, facts, markers, contents, a: int, b: int) -> str:
     return EVIDENCE[8]
 
 
+def link_kind(doc_manifest: dict, rows: dict, a: int, b: int) -> str:
+    """Within one pipeline document, or a boundary (and b's date against a's), from the ORIGINAL
+    pipeline rows of the unshuffled document (oracle view; diagnosis only)."""
+    inv = {int(new): int(old) for old, new in doc_manifest.get("renamed (original -> new)", {}).items()}
+    ra, rb = rows.get(inv.get(a, a)) or {}, rows.get(inv.get(b, b)) or {}
+    da, db = str(ra.get("document_seq") or "").strip(), str(rb.get("document_seq") or "").strip()
+    if not da or not db:
+        return "no pipeline document"
+    if da == db:
+        return "within document"
+    ta, tb = pipeline_csv.iso_date(ra.get("dos_from")), pipeline_csv.iso_date(rb.get("dos_from"))
+    if not ta or not tb:
+        return "boundary, undated"
+    return "boundary, b later" if tb > ta else "boundary, same date" if tb == ta else "boundary, b earlier"
+
+
 def read_links(names: list[str], pages_of: dict[str, list[int]]) -> tuple[dict[str, set], dict[str, dict]]:
     """Per document: the anchored links, and each true link's evidence."""
     from seqlib.io.chart import load_chart
@@ -158,18 +174,7 @@ def main() -> int:
     anchors, evidence = ({}, {}) if args.no_pages else read_links(names, truth)
 
     def kind(doc: str, a: int, b: int) -> str:
-        inv = {int(new): int(old) for old, new in manifest[doc].get("renamed (original -> new)", {}).items()}
-        rows = original.get(doc, {})
-        ra, rb = rows.get(inv.get(a, a)) or {}, rows.get(inv.get(b, b)) or {}
-        da, db = str(ra.get("document_seq") or "").strip(), str(rb.get("document_seq") or "").strip()
-        if not da or not db:
-            return "no pipeline document"
-        if da == db:
-            return "within document"
-        ta, tb = pipeline_csv.iso_date(ra.get("dos_from")), pipeline_csv.iso_date(rb.get("dos_from"))
-        if not ta or not tb:
-            return "boundary, undated"
-        return "boundary, b later" if tb > ta else "boundary, same date" if tb == ta else "boundary, b earlier"
+        return link_kind(manifest[doc], original.get(doc, {}), a, b)
 
     # links: (kind, anchored, broken, {tag: right})
     table = defaultdict(lambda: {"links": 0, "broken": 0, "methods": defaultdict(lambda: [0, 0])})

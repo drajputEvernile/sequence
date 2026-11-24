@@ -72,8 +72,12 @@ def seam_for_pairs(scorer: Optional[SeamScorer], cf, pairs: Sequence[tuple[int, 
     return {pair: float(p) for pair, p in zip(real, probs)}
 
 
-def training_pairs(examples: Iterable, rng: random.Random) -> list[tuple[str, str, int, str]]:
-    """(a's ending, b's opening, label, document) from (chart, truth) examples."""
+NEGATIVE_KINDS = ("scan neighbour", "most similar", "random")
+
+
+def training_pairs(examples: Iterable, rng: random.Random) -> list[tuple]:
+    """(a's ending, b's opening, label, document, kind, a, b) from (chart, truth) examples; kind is
+    "true next" or one of NEGATIVE_KINDS (the first that picked the page)."""
     from seqlib.v2.features import chart_features
 
     rows = []
@@ -88,20 +92,20 @@ def training_pairs(examples: Iterable, rng: random.Random) -> list[tuple[str, st
         true_next = dict(zip(order, order[1:]))
         idx = {p.page_number: i for i, p in enumerate(cf.pages)}
         for a, b in true_next.items():
-            rows.append((texts[a][0], texts[b][1], 1, chart.name))
-            wrong = set()
+            rows.append((texts[a][0], texts[b][1], 1, chart.name, "true next", a, b))
+            wrong: dict[int, str] = {}
             if nxt_scan.get(a) not in (None, b):
-                wrong.add(nxt_scan[a])
+                wrong.setdefault(nxt_scan[a], NEGATIVE_KINDS[0])
             sims = cf.char_sim[idx[a]].copy()
             for j in np.argsort(-sims):
                 c = cf.pages[int(j)].page_number
                 if c not in (a, b):
-                    wrong.add(c)
+                    wrong.setdefault(c, NEGATIVE_KINDS[1])
                     break
             others = [p for p in order if p not in (a, b) and p not in wrong]
             if others:
-                wrong.add(rng.choice(others))
-            rows += [(texts[a][0], texts[c][1], 0, chart.name) for c in sorted(wrong)]
+                wrong.setdefault(rng.choice(others), NEGATIVE_KINDS[2])
+            rows += [(texts[a][0], texts[c][1], 0, chart.name, wrong[c], a, c) for c in sorted(wrong)]
     return rows
 
 

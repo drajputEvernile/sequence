@@ -151,6 +151,34 @@ def test_seam_model(data):
     assert sorted(r.main_order) == sorted(data[keys[-1]].main_order)
 
 
+def test_seam_diagnosis_counts_only(data):
+    """seam_diagnose: the pairs are the seam's own (tagged by kind), every AUC block is filled, and the
+    report holds no page text."""
+    import json
+    import random
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from seam_diagnose import doc_rows, summarise
+    from seqlib.io.chart import load_chart
+    from seqlib.ladder.seam import NEGATIVE_KINDS, training_pairs
+
+    keys = sorted(data)[:6]
+    rows = training_pairs([(load_chart(k), data[k]) for k in keys], random.Random(0))
+    assert {r[4] for r in rows} <= {"true next", *NEGATIVE_KINDS} and any(r[4] == "most similar" for r in rows)
+    got = [r for i, k in enumerate(keys) for r in doc_rows(k, data[k], {}, {}, random.Random(i))]
+    for r in got:
+        r["seam"] = r["tfidf"]  # stand-in scores
+    report = summarise(got, len(keys), [len(r["tail"].split()) for r in got], 256)
+    assert report["true pairs"] == sum(r["label"] for r in got) > 0
+    assert report["auc: seam"]["all pairs"] == report["auc: tfidf"]["all pairs"] is not None
+    assert sum(b["true pairs"] for b in report["auc: tfidf"]["by evidence (those true pairs vs all wrong)"].values()) \
+        == report["true pairs"]
+    text = json.dumps(report)
+    assert not any(r["tail"] in text for r in got if len(r["tail"]) > 20)
+
+
 def test_margin_rule_when_no_margin_meets_the_floor(data):
     from seqlib.io.chart import load_chart
     from seqlib.v3.model import V3Settings, train

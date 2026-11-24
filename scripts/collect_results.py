@@ -7,6 +7,7 @@ can be copied out one at a time, in any order:
     <set>_scores.json               every method's evaluation summary on that set (<set> = real, shuffle_ops5 ...)
     <set>_shuffle_report.json       by operation kind / count / document size (when run)
     <set>_link_report.json          which links each method repairs, by evidence (when run)
+    shuffle_train_seam_diagnosis.json   why the seam learns what it does (seam_diagnose.py, when run)
 
     python scripts\\collect_results.py          (with SEQ_CONFIG unset: the main config)
 
@@ -61,7 +62,7 @@ def shuffle_set(folder: Path) -> dict:
         }
     root = folder / "outputs"
     out["evaluations"] = latest_summaries(root)
-    for name in ("shuffle_report.json", "link_report.json"):
+    for name in ("shuffle_report.json", "link_report.json", "seam_diagnosis.json"):
         if (root / name).is_file():
             out[name.removesuffix(".json")] = json.loads((root / name).read_text(encoding="utf-8"))
     return out
@@ -106,7 +107,7 @@ def main() -> int:
             written.append(write(share, f"{name}_built.json", block["built"]))
         if block.get("evaluations"):
             written.append(write(share, f"{name}_scores.json", block["evaluations"]))
-        for report in ("shuffle_report", "link_report"):
+        for report in ("shuffle_report", "link_report", "seam_diagnosis"):
             if report in block:
                 written.append(write(share, f"{name}_{report}.json", block[report]))
         for method, s in block.get("evaluations", {}).items():
