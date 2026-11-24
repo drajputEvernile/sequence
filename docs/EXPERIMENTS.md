@@ -78,6 +78,16 @@ Dropped after measuring (code in git history): v2 (pair model with scan inputs: 
 neighbour = next page"), v3 / v4 / v6 / v7 / v7s (steps of the ladder, superseded by v5 / v8),
 the set-aside model and photo OCR (blank / junk is taken as perfect for now).
 
+Seam diagnosis (2026-11-24, clean rebuild, `seam_diagnose.py`, 214 unseen training documents): the
+first seam (wrong pages: scan neighbour, most similar-looking, random; lr 2e-5) reached AUC 0.62 --
+0.50 against random pages and 0.51 against the scan neighbour (TF-IDF: 0.70 / 0.67), 0.76 against
+the most similar page. It learned only "the most similar page is not the next one", which the TF-IDF
+features already carry. Not over-fitting (0.67 on its own documents); text length fine (~42 words a
+side, 1.6% cut off). Only 5.5% of true breaks visibly continue a sentence. Strongest clue of each true
+link: printed page number 25%, bare number 23%, dates / encounter 15%, list / sentence / section 9%,
+none 28%. Retrained with the scan neighbour + two random pages, all of the seam half, lr 5e-5, the
+held-out AUC per epoch (best epoch kept). Bar to keep the seam: about 0.80 against random pages.
+
 Link report (v8): of 3,424 true links the shuffle broke 721; only 36 had a page-number anchor (all
 repaired since v4); within-document links: 32% repaired. v8's real-data loss is one in-order
 document the gate flagged (0.99) and scrambled.

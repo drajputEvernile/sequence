@@ -139,11 +139,19 @@ def test_seam_model(data):
     _tiny_base(cfg.SEAM_BASE_MODEL_PATH)
     keys = sorted(data)
     half = sorted(seam_half(keys[:10])) or keys[:5]
+    held = [k for k in keys[:10] if k not in half][:3]
     report = train_seam(cfg.SEAM_BASE_MODEL_PATH, cfg.SEAM_MODEL_PATH, ((load_chart(k), data[k]) for k in half),
-                        epochs=1, batch=16, max_length=64)
-    assert report["pairs"] > 0
+                        epochs=2, batch=16, max_length=64, held_out=[(load_chart(k), data[k]) for k in held])
+    assert report["pairs"] > 0 and report["held_out_pairs"] > 0
+    assert [c["epoch"] for c in report["epoch_curve"]] == [1, 2]
+    best = max(report["epoch_curve"], key=lambda c: c["held_out_auc"])  # the best epoch is the one saved
+    assert report["epochs"] == best["epoch"] and report["held_out_auc"] == best["held_out_auc"]
+    assert "most similar" in report["held_out_auc_by_kind"]
+    again = train_seam(None, cfg.SEAM_MODEL_PATH, ((load_chart(k), data[k]) for k in half), epochs=1, batch=16,
+                       max_length=64, held_out=[(load_chart(k), data[k]) for k in held], resume=True)
+    assert again["epoch_curve"][-1]["epoch"] == best["epoch"] + 1  # resume goes on from the saved epoch
     seam = load_seam(required=True)
-    assert set(seam.meta["trained_on"]) == set(half)
+    assert set(seam.meta["trained_on"]) == set(half) and set(seam.meta["held_out_documents"]) == set(held)
     model = train(((load_chart(k), data[k]) for k in keys[:10]), settings_for("v5", groups=("banner", "dates", "hash", "seam"), margins=(0.0, 2.0)),
                   seam=seam, fit_exclude=set(half))
     assert model.report["fitted_on_documents"] == 10 - len(half)
@@ -157,6 +165,7 @@ def test_seam_diagnosis_counts_only(data):
     import json
     import random
     import sys
+    from collections import Counter
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -165,7 +174,12 @@ def test_seam_diagnosis_counts_only(data):
     from seqlib.ladder.seam import NEGATIVE_KINDS, training_pairs
 
     keys = sorted(data)[:6]
-    rows = training_pairs([(load_chart(k), data[k]) for k in keys], random.Random(0))
+    examples = [(load_chart(k), data[k]) for k in keys]
+    rows = training_pairs(examples, random.Random(0))  # what the seam learns from: no "most similar"
+    assert {r[4] for r in rows} <= {"true next", "scan neighbour", "random"}
+    per_a = Counter((r[3], r[5]) for r in rows if r[4] == "random")
+    assert max(per_a.values()) == 2  # two random wrong pages per true pair (when the document has them)
+    rows = training_pairs(examples, random.Random(0), negatives=NEGATIVE_KINDS)
     assert {r[4] for r in rows} <= {"true next", *NEGATIVE_KINDS} and any(r[4] == "most similar" for r in rows)
     got = [r for i, k in enumerate(keys) for r in doc_rows(k, data[k], {}, {}, random.Random(i))]
     for r in got:

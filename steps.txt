@@ -49,6 +49,9 @@ foreach ($s in "shuffle_train", "shuffle_ops5", "shuffle_ops4", "shuffle_ops3", 
 # ----- 6. train every model on the training set (several hours on CPU) -----------------
 $env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_train\config_shuffled.py"
 python scripts\train_seam.py                  # the seam text model (the longest step; prints time left)
+                                              # after each epoch: "held-out AUC ..."; the best epoch is kept.
+                                              # Still rising at the last epoch? more epochs on the same model:
+                                              #   python scripts\train_seam.py --resume --epochs 2
 python scripts\seam_diagnose.py               # what the seam learned and why (~20-30 min; bring back
                                               # outputs\seam_diagnosis.json, or collect_results' copy)
 python scripts\train.py --version v5

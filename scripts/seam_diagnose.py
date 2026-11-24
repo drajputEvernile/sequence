@@ -70,7 +70,7 @@ def doc_rows(name, truth, manifest, original, rng) -> list[dict]:
     from seqlib.v2.features import chart_features
 
     chart = load_chart(name)
-    rows = training_pairs([(chart, truth)], rng)
+    rows = training_pairs([(chart, truth)], rng, negatives=NEGATIVE_KINDS)  # every kind of wrong page
     if not rows:
         return []
     order = [p for p in truth.main_order if p in chart.by_number()]
@@ -207,8 +207,9 @@ def main() -> int:
 
         scorer = SeamScorer(cfg.SEAM_MODEL_PATH)
     max_length = int(meta.get("max_length") or 256)
-    report: dict = {"seam model": {k: meta.get(k) for k in ("pairs", "held_out_pairs", "held_out_auc", "epochs",
-                                                             "lr", "max_length")}}
+    report: dict = {"seam model": {k: meta.get(k) for k in (
+        "pairs", "held_out_pairs", "negatives", "held_out_auc", "held_out_auc_by_kind", "epochs", "epoch_curve",
+        "lr", "max_length") if k in meta}}
     for group, docs in (("unseen", unseen), ("seen", seen)):
         rows, tokens, done = [], [], 0
         for i, name in enumerate(docs, start=1):

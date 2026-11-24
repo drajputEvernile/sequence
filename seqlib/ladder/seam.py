@@ -73,11 +73,17 @@ def seam_for_pairs(scorer: Optional[SeamScorer], cf, pairs: Sequence[tuple[int, 
 
 
 NEGATIVE_KINDS = ("scan neighbour", "most similar", "random")
+# What the seam learns from (2026-11-24): the wrong scan neighbour and two random pages of the same
+# document. The "most similar" page is left out: with it, the seam learned only "the most similar
+# page is not the next one" (AUC 0.50 against random pages, below TF-IDF's 0.70), which v8 / v9's
+# TF-IDF features already say. seam_diagnose.py still measures it against all three kinds.
+TRAIN_NEGATIVES = ("scan neighbour", "random", "random")
 
 
-def training_pairs(examples: Iterable, rng: random.Random) -> list[tuple]:
+def training_pairs(examples: Iterable, rng: random.Random, negatives: Sequence[str] = TRAIN_NEGATIVES) -> list[tuple]:
     """(a's ending, b's opening, label, document, kind, a, b) from (chart, truth) examples; kind is
-    "true next" or one of NEGATIVE_KINDS (the first that picked the page)."""
+    "true next" or one of NEGATIVE_KINDS (the first that picked the page). ``negatives``: the wrong
+    pages to draw for each true pair, by kind ("random" may repeat: distinct pages)."""
     from seqlib.v2.features import chart_features
 
     rows = []
@@ -94,24 +100,54 @@ def training_pairs(examples: Iterable, rng: random.Random) -> list[tuple]:
         for a, b in true_next.items():
             rows.append((texts[a][0], texts[b][1], 1, chart.name, "true next", a, b))
             wrong: dict[int, str] = {}
-            if nxt_scan.get(a) not in (None, b):
-                wrong.setdefault(nxt_scan[a], NEGATIVE_KINDS[0])
-            sims = cf.char_sim[idx[a]].copy()
-            for j in np.argsort(-sims):
-                c = cf.pages[int(j)].page_number
-                if c not in (a, b):
-                    wrong.setdefault(c, NEGATIVE_KINDS[1])
-                    break
-            others = [p for p in order if p not in (a, b) and p not in wrong]
-            if others:
-                wrong.setdefault(rng.choice(others), NEGATIVE_KINDS[2])
+            if "scan neighbour" in negatives and nxt_scan.get(a) not in (None, b):
+                wrong.setdefault(nxt_scan[a], "scan neighbour")
+            if "most similar" in negatives:
+                sims = cf.char_sim[idx[a]].copy()
+                for j in np.argsort(-sims):
+                    c = cf.pages[int(j)].page_number
+                    if c not in (a, b):
+                        wrong.setdefault(c, "most similar")
+                        break
+            for _ in range(sum(k == "random" for k in negatives)):
+                others = [p for p in order if p not in (a, b) and p not in wrong]
+                if others:
+                    wrong.setdefault(rng.choice(others), "random")
             rows += [(texts[a][0], texts[c][1], 0, chart.name, wrong[c], a, c) for c in sorted(wrong)]
     return rows
 
 
-def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int = 3, lr: float = 2e-5,
-               batch: int = 32, max_length: int = 256, seed: int = 0,
-               held_share: float = 0.1) -> dict:
+def _held_out_auc(model, tokenizer, rows, max_length: int, batch: int = 64) -> Optional[tuple[float, dict]]:
+    """AUC of the model on held-out pairs (all three kinds of wrong page) and by kind."""
+    if not rows or len({r[2] for r in rows}) < 2:
+        return None
+    import torch
+    from sklearn.metrics import roc_auc_score
+
+    model.eval()
+    probs = []
+    with torch.no_grad():
+        for i in range(0, len(rows), batch):
+            chunk = rows[i:i + batch]
+            enc = tokenizer([r[0] for r in chunk], [r[1] for r in chunk], truncation=True, max_length=max_length,
+                            padding=True, return_tensors="pt")
+            probs += torch.sigmoid(model(**enc).logits.reshape(-1)).tolist()
+    model.train()
+    return round(float(roc_auc_score([r[2] for r in rows], probs)), 4), {
+        kind: round(float(roc_auc_score([1] * sum(r[2] for r in rows) + [0] * sum(r[4] == kind for r in rows),
+                                        [p for r, p in zip(rows, probs) if r[2]]
+                                        + [p for r, p in zip(rows, probs) if r[4] == kind])), 4)
+        for kind in NEGATIVE_KINDS if any(r[4] == kind for r in rows)}
+
+
+def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int = 3, lr: float = 5e-5,
+               batch: int = 32, max_length: int = 256, seed: int = 0, held_out: Iterable = (),
+               resume: bool = False) -> dict:
+    """Fine-tune on ``examples`` ((chart, truth) pairs). ``held_out``: other documents, scored after
+    every epoch (AUC, also by kind of wrong page); the best epoch is the one saved. ``resume``: go on
+    from the model already in ``out_path`` (same documents) for ``epochs`` more epochs."""
+    import time
+
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -119,25 +155,49 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     torch.manual_seed(seed)
     examples = list(examples)
     names = sorted({c.name for c, _ in examples})
-    held = set(rng.sample(names, max(1, int(len(names) * held_share)))) if len(names) >= 5 else set()
-    rows = training_pairs(examples, rng)
-    train_rows = [r for r in rows if r[3] not in held]
-    test_rows = [r for r in rows if r[3] in held]
+    held = list(held_out)
+    held_names = sorted({c.name for c, _ in held})
+    before = {}
+    if resume:
+        before = json.loads((Path(out_path) / META).read_text(encoding="utf-8"))
+        if sorted(before.get("trained_on") or []) != names:
+            raise ValueError("resume: the documents differ from the ones the saved seam learned from")
+        rng = random.Random(seed + int(before.get("epochs") or 0))
+    train_rows = training_pairs(examples, rng)
+    # the held-out pairs include the "most similar" kind too, to see the seam against every kind
+    test_rows = training_pairs(held, random.Random(seed), negatives=NEGATIVE_KINDS) if held else []
 
-    tokenizer = AutoTokenizer.from_pretrained(str(base_path))
-    model = AutoModelForSequenceClassification.from_pretrained(str(base_path), num_labels=1)
+    start = Path(out_path) if resume else Path(base_path)
+    tokenizer = AutoTokenizer.from_pretrained(str(start))
+    model = AutoModelForSequenceClassification.from_pretrained(str(start), num_labels=1)
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model.train()
-    import time
 
+    def save(meta_extra: dict) -> None:
+        Path(out_path).mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(out_path))
+        tokenizer.save_pretrained(str(out_path))
+        meta.update(meta_extra)
+        (Path(out_path) / META).write_text(json.dumps(meta, indent=1), encoding="utf-8")
+
+    done_before = int(before.get("epochs") or 0)
+    # resume goes on from the saved (best) epoch; later epochs that were not kept are dropped
+    curve = [c for c in before.get("epoch_curve") or [] if c["epoch"] <= done_before]
+    best = before.get("held_out_auc") if resume else None
+    meta = {"base_model": before.get("base_model", str(base_path)), "trained_on": names,
+            "held_out_documents": held_names, "pairs": len(train_rows), "held_out_pairs": len(test_rows),
+            "negatives": list(TRAIN_NEGATIVES), "lr": lr, "max_length": max_length,
+            "held_out_auc": best, "held_out_auc_by_kind": before.get("held_out_auc_by_kind"),
+            "epochs": done_before, "epoch_curve": curve}
     batches = (len(train_rows) + batch - 1) // batch
     every = max(1, batches // 20)  # about 20 progress lines per epoch
-    logger.info("seam: %d training pairs (%d held out), %d batches per epoch, %d epochs, input length %d",
-                len(train_rows), len(test_rows), batches, epochs, max_length)
+    logger.info("seam: %d training pairs from %d documents; %d held-out pairs from %d documents; "
+                "%d batches per epoch, %d epochs, input length %d, lr %g",
+                len(train_rows), len(names), len(test_rows), len(held_names), batches, epochs, max_length, lr)
     started = time.time()
     done = 0
-    for epoch in range(epochs):
+    for epoch in range(done_before + 1, done_before + epochs + 1):
         rng.shuffle(train_rows)
         total = 0.0
         for k, i in enumerate(range(0, len(train_rows), batch), start=1):
@@ -155,23 +215,20 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
                 elapsed = time.time() - started
                 left = elapsed / done * (batches * epochs - done)
                 logger.info("seam epoch %d/%d batch %d/%d  loss %.4f  elapsed %dm  about %dm left",
-                            epoch + 1, epochs, k, batches, total / min(len(train_rows), i + len(chunk)),
-                            elapsed // 60, left // 60)
-        logger.info("seam epoch %d: loss %.4f", epoch + 1, total / max(1, len(train_rows)))
-    model.eval()
-    Path(out_path).mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(str(out_path))
-    tokenizer.save_pretrained(str(out_path))
-
-    auc = None
-    if test_rows and len({r[2] for r in test_rows}) == 2:
-        from sklearn.metrics import roc_auc_score
-
-        scorer = SeamScorer(out_path, max_length)
-        probs = scorer.score([r[0] for r in test_rows], [r[1] for r in test_rows])
-        auc = round(float(roc_auc_score([r[2] for r in test_rows], probs)), 4)
-    meta = {"base_model": str(base_path), "trained_on": names, "held_out_documents": sorted(held),
-            "pairs": len(train_rows), "held_out_pairs": len(test_rows), "held_out_auc": auc,
-            "epochs": epochs, "lr": lr, "max_length": max_length}
-    (Path(out_path) / META).write_text(json.dumps(meta, indent=1), encoding="utf-8")
+                            epoch, done_before + epochs, k, batches,
+                            total / min(len(train_rows), i + len(chunk)), elapsed // 60, left // 60)
+        epoch_loss = round(total / max(1, len(train_rows)), 4)
+        got = _held_out_auc(model, tokenizer, test_rows, max_length) if test_rows else None
+        auc, by_kind = got if got else (None, None)
+        curve.append({"epoch": epoch, "loss": epoch_loss, "held_out_auc": auc, "by_kind": by_kind})
+        logger.info("seam epoch %d: loss %.4f  held-out AUC %s  %s", epoch, epoch_loss, auc,
+                    "  ".join(f"vs {k} {v}" for k, v in (by_kind or {}).items()))
+        if auc is None or best is None or auc > best:
+            best = auc
+            save({"held_out_auc": auc, "held_out_auc_by_kind": by_kind, "epochs": epoch, "epoch_curve": curve})
+            logger.info("seam: epoch %d saved (best so far)", epoch)
+        else:
+            meta["epoch_curve"] = curve
+            (Path(out_path) / META).write_text(json.dumps(meta, indent=1), encoding="utf-8")
+            logger.info("seam: epoch %d not saved (epoch %d is better)", epoch, meta["epochs"])
     return {k: v for k, v in meta.items() if k not in ("trained_on", "held_out_documents")}
