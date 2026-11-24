@@ -41,7 +41,8 @@ def main() -> int:
     ap.add_argument("--min-pages", type=int, default=4, help="at least this many Main pages")
     ap.add_argument("--from", dest="source", choices=("all", "test", "train"), default="all",
                     help="which split to draw from (all = train + test)")
-    ap.add_argument("--max-ops", type=int, default=3, help="up to this many shuffle operations per document")
+    ap.add_argument("--max-ops", type=int, default=3, help="up to this many shuffle operations per document (1..max, at random)")
+    ap.add_argument("--ops", type=int, default=None, help="exactly this many operations per document (overrides --max-ops)")
     ap.add_argument("--unchanged", type=float, default=0.0,
                     help="share of the chosen documents left in order as a control (e.g. 0.1)")
     ap.add_argument("--role", choices=("test", "train"), default="test",
@@ -67,8 +68,9 @@ def main() -> int:
     if not docs:
         raise SystemExit("no document qualifies")
     out = Path(args.out).resolve()
+    max_ops = args.ops or args.max_ops
     made = build(out, docs, truths, pipeline, cfg.PIPELINE_OUTPUT_CSV, cfg.GROUND_TRUTH_PATH, images, ocr,
-                 args.seed, args.max_ops, args.unchanged, splits, role=args.role)
+                 args.seed, max_ops, args.unchanged, splits, role=args.role, min_ops=args.ops or 1)
     config_path = out / "config_shuffled.py"
     config_path.write_text(CONFIG_TEMPLATE.format(main=Path(cfg.__file__).resolve(), root=out, this=config_path),
                            encoding="utf-8")
@@ -81,6 +83,8 @@ def main() -> int:
         "documents": len(made), "from": args.source, "role": args.role, "seed": args.seed,
         "left_in_order (control)": sum(1 for m in made if m.operations == ["unchanged (control)"]),
         "main_pages_per_document": dict(sorted(sizes.items())),
+        "operations_per_document": dict(sorted(Counter(len(m.operations) for m in made
+                                                       if m.operations != ["unchanged (control)"]).items())),
         "operations": dict(kinds), "pages_renamed": sum(m.pages_moved for m in made),
         "pages_total": sum(m.pages for m in made),
         "documents_by_split": dict(Counter(splits.get(m.doc, "?") for m in made)),

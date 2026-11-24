@@ -96,10 +96,9 @@ SPLIT_SEED = 13
 # The versions (seqlib/versions.py: v5, v8, v9; scripts/train.py): LADDER_MODEL_DIR\<version>\model.joblib.
 LADDER_MODEL_DIR = REPO / "models"
 # The seam cross-encoder of v8 / v9 (scripts/train_seam.py). SEAM_BASE_MODEL_PATH: a local copy of a small
-# pre-trained model to fine-tune, e.g. sentence-transformers/all-MiniLM-L6-v2 (None = not set).
-SEAM_BASE_MODEL_PATH = None
+# pre-trained model to fine-tune: sentence-transformers/all-MiniLM-L6-v2 (Apache-2.0), downloaded once.
+SEAM_BASE_MODEL_PATH = REPO / "models" / "base" / "all-MiniLM-L6-v2"   # downloaded once (steps.txt)
 SEAM_MODEL_PATH = REPO / "models" / "seam"
-SEAM_DEVICE = "cpu"              # "cuda" on the GPU machine
 # v1's rule files (copied from the pipeline's core-pipeline/resources/canon).
 V1_CANON_DIR = REPO / "seqlib" / "v1" / "resources"
 

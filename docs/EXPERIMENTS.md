@@ -2,9 +2,13 @@
 
 The goal (agreed 2026-11-24): with blank / junk taken as perfect (`--set-aside truth`),
 
-1. **≥ 95% position accuracy on the shuffle test** -- every page at exactly its right place, on
-   documents put out of order by up to 3 operations (swap, moved page, moved block, reversed block);
+1. **≥ 95% position accuracy on the shuffle tests** -- every page at exactly its right place, on the
+   test documents put out of order by exactly 5, 4, 3, 2 and 1 operations, and by 1-5 at random
+   (swap, moved page, moved block, reversed block): six sets, the same documents in each;
 2. then **≈ 99% position accuracy on the real (unshuffled) documents** -- no harm.
+
+Clean rebuild (steps.txt): new split; every model trained on `shuffle_train` (train documents,
+1-5 random operations, 30% left in order). CPU only.
 
 Position accuracy is what the review UI counts: one page out of place shifts every page after it.
 

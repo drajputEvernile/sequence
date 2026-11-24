@@ -5,7 +5,7 @@ Joins <shuffle folder>/shuffle_manifest.json with the latest evaluation of each 
 
 * by operation kind (documents whose shuffle included a swap / moved page / moved block /
   reversed block): mean position and successor accuracy, share of documents fully repaired;
-* by document size (Main pages) and by how many pages the shuffle moved.
+* by the number of operations, by document size (Main pages) and by how many pages the shuffle moved.
 
     python scripts/shuffle_report.py
     python scripts/shuffle_report.py --methods scan-setaside_truth v9-setaside_truth
@@ -80,6 +80,10 @@ def main() -> int:
             groups["all"]["all"].append(score)
             for kind in sorted({kind_of(op) for op in info["operations"]}):
                 groups["by operation (documents that had it)"][kind].append(score)
+            ops = info["operations"]
+            groups["by number of operations"][
+                "0 (control)" if ops == ["unchanged (control)"] else f"{len(ops)} operation{'s' * (len(ops) > 1)}"
+            ].append(score)
             groups["by size (Main pages)"][size_bucket(info["main_pages"])].append(score)
             groups["by pages moved"][moved_bucket(info["pages_moved"] / max(1, info["pages"]))].append(score)
         report[tag] = {

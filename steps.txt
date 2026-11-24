@@ -1,22 +1,84 @@
-# Copy the updated repo to C:\Development\sequence first (keep that machine's own config.py).
-# The trained v5 / v8 models and the seam model stay as they are: nothing to retrain for them.
+# =====================================================================================
+#  Clean rebuild on the training machine (PowerShell). Everything is made from scratch:
+#  new split, new shuffle sets, every model trained again (seam, v5, v8, v9). CPU only.
+#  Run the blocks in order; each says roughly how long it takes.
+# =====================================================================================
 
-# ===== 1. train v9 (training shuffle set) =====
+# ----- 0. code ------------------------------------------------------------------------
+# Delete the old C:\Development\sequence completely. Download the repo zip from GitHub
+# (branch v9-and-cleanup, or main once merged) and extract it so that
+# C:\Development\sequence\seqlib exists (not ...\sequence\sequence-main\seqlib).
+cd C:\Development\sequence
+
+# ----- 1. Python and packages (once, ~10 min) -----------------------------------------
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements-seam.txt          # numpy, scikit-learn, Pillow, openpyxl, pytest, torch (CPU), transformers
+python -m pytest -q tests                     # should end with "passed"
+
+# ----- 2. the seam model's base model (once, ~1 min, ~90 MB) ----------------------------
+python -c "from huggingface_hub import snapshot_download; snapshot_download('sentence-transformers/all-MiniLM-L6-v2', local_dir=r'models\base\all-MiniLM-L6-v2')"
+# (config.py already points SEAM_BASE_MODEL_PATH at models\base\all-MiniLM-L6-v2)
+
+# ----- 3. config.py ---------------------------------------------------------------------
+# Edit the four input paths at the top of config.py: RAW_DOCS_ROOT, OCR_DOCS_ROOT,
+# PIPELINE_OUTPUT_CSV, GROUND_TRUTH_PATH. Nothing else needs changing.
+
+# ----- 4. inputs, split (~15-30 min) ------------------------------------------------------
+python scripts\check_inputs.py                # every path "ok" (the model folders are made later)
+python scripts\inventory.py                   # usable documents (in all four inputs)
+python scripts\import_ocr.py                  # their OCR -> workspace\charts
+python scripts\make_split.py                  # 80% train / 20% test, by document
+python scripts\explain_errors.py              # real documents: how many are out of order, and why
+
+# ----- 5. the shuffle sets (~30-60 min) -------------------------------------------------
+# Training set: the train documents, 1 to 5 random operations each, 30% left in order (controls).
+python scripts\make_shuffle_test.py --from train --role train --min-pages 2 --unchanged 0.3 --count 1000 --max-ops 5 --out workspace\shuffle_train
+# Six test sets: the SAME test documents (same seed), damaged differently.
+foreach ($k in 5, 4, 3, 2, 1) {
+    python scripts\make_shuffle_test.py --from test --role test --count 1000 --ops $k --out workspace\shuffle_ops$k
+}
+python scripts\make_shuffle_test.py --from test --role test --count 1000 --max-ops 5 --out workspace\shuffle_random
+# Import each set's OCR:
+foreach ($s in "shuffle_train", "shuffle_ops5", "shuffle_ops4", "shuffle_ops3", "shuffle_ops2", "shuffle_ops1", "shuffle_random") {
+    $env:SEQ_CONFIG = "C:\Development\sequence\workspace\$s\config_shuffled.py"
+    python scripts\import_ocr.py
+}
+
+# ----- 6. train every model on the training set (several hours on CPU) -----------------
 $env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_train\config_shuffled.py"
+python scripts\train_seam.py                  # the seam text model (the longest step; prints time left)
+python scripts\train.py --version v5
+python scripts\train.py --version v8
 python scripts\train.py --version v9
-python scripts\show_reports.py v8 v9
+python scripts\show_reports.py                # the training reports, to check they all trained
 
-# ===== 2. the shuffled test documents (up to 3 operations each) =====
-$env:SEQ_CONFIG = "C:\Development\sequence\workspace\shuffle_eval\config_shuffled.py"
-python scripts\evaluate.py --method v9 --set-aside truth
-python scripts\link_report.py --methods scan-setaside_truth v1-csv-setaside_truth v5-setaside_truth v8-setaside_truth v9-setaside_truth
-python scripts\shuffle_report.py --methods scan-setaside_truth v5-setaside_truth v8-setaside_truth v9-setaside_truth
-python scripts\compare.py
+# ----- 7. score on the six shuffle sets (v8 / v9: about an hour per set each) ------------
+foreach ($s in "shuffle_ops5", "shuffle_ops4", "shuffle_ops3", "shuffle_ops2", "shuffle_ops1", "shuffle_random") {
+    $env:SEQ_CONFIG = "C:\Development\sequence\workspace\$s\config_shuffled.py"
+    foreach ($m in "scan", "v1", "v5", "v8", "v9") {
+        python scripts\evaluate.py --method $m --set-aside truth
+    }
+    python scripts\shuffle_report.py          # by operation kind / count / document size
+    python scripts\link_report.py             # which links each method repairs, by evidence
+}
 
-# Bring back: the show_reports output, the evaluate summary (printed), outputs\link_report.json
-# and outputs\shuffle_report.json from the shuffle_eval workspace. Counts and scores only.
+# ----- 8. the real (unshuffled) test documents: no harm (~2-3 hours) --------------------
+Remove-Item Env:SEQ_CONFIG
+foreach ($m in "scan", "v1", "v5", "v8", "v9") {
+    python scripts\evaluate.py --method $m --set-aside truth
+}
 
-# ===== 3. later, once the shuffle test is where we want it: the real test documents =====
-# Remove-Item Env:SEQ_CONFIG
-# python scripts\evaluate.py --method v9 --set-aside truth
-# python scripts\compare.py
+# ----- 9. what to bring back ------------------------------------------------------------
+python scripts\collect_results.py             # prints the table and the files it wrote, with sizes
+# Small separate files in C:\Development\sequence\outputs\share\ -- copy them out one at a time,
+# in any order (start with 00_scores.txt):
+#   00_scores.txt                 every method on every set (the main table)
+#   model_v5.json, model_v8.json, model_v9.json, model_seam.json      training reports
+#   <set>_built.json              how each shuffle set was made
+#   <set>_scores.json             every method's scores on that set (set = real, shuffle_ops5 ... shuffle_random)
+#   <set>_shuffle_report.json     by operation kind / count / size
+#   <set>_link_report.json        which links each method repairs, by evidence
+# Counts and scores only -- no document names, page numbers or text. Do NOT share
+# per_chart.csv or errors.txt (they name documents).

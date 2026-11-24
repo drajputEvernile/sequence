@@ -1,15 +1,13 @@
-"""Fine-tune the seam cross-encoder (for v6). Run with the training shuffle set's config active,
-on the GPU machine if there is one.
+"""Fine-tune the seam cross-encoder (for v8 / v9; CPU only). Run with the training shuffle set's config active.
 
 Needs ``pip install -r requirements-seam.txt`` and a local copy of a small pre-trained model in
 config.SEAM_BASE_MODEL_PATH (for example sentence-transformers/all-MiniLM-L6-v2, Apache-2.0:
 download its folder once and copy it there; nothing is downloaded by this script).
 
     $env:SEQ_CONFIG = "<repo>\\workspace\\shuffle_train\\config_shuffled.py"
-    python scripts\\train_seam.py                         # 3 epochs, config.SEAM_DEVICE
-    python scripts\\train_seam.py --epochs 2 --device cuda
+    python scripts\\train_seam.py                         # 3 epochs
 
-Learns from half of the training documents (a fixed half by name; v6's evidence model fits on the
+Learns from half of the training documents (a fixed half by name; the v8 / v9 evidence model fits on the
 other half) and reports the held-out AUC. Saves to config.SEAM_MODEL_PATH.
 """
 import argparse
@@ -33,7 +31,6 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--max-length", type=int, default=256)
-    ap.add_argument("--device", default=getattr(cfg, "SEAM_DEVICE", "cpu"))
     args = ap.parse_args()
     base = getattr(cfg, "SEAM_BASE_MODEL_PATH", None)
     if base is None or not base.is_dir():
@@ -41,10 +38,9 @@ def main() -> int:
     truths = load_ground_truth(cfg.GROUND_TRUTH_PATH)
     names = [n for n in read_split(cfg.SPLIT_FILE)["train"] if n in truths and not truths[n].problems()]
     half = sorted(seam_half(names))
-    print(f"seam: learning from {len(half)} of {len(names)} training documents on {args.device}")
+    print(f"seam: learning from {len(half)} of {len(names)} training documents (CPU)")
     report = train_seam(base, cfg.SEAM_MODEL_PATH, ((load_chart(n), truths[n]) for n in half),
-                        epochs=args.epochs, lr=args.lr, batch=args.batch, max_length=args.max_length,
-                        device=args.device)
+                        epochs=args.epochs, lr=args.lr, batch=args.batch, max_length=args.max_length)
     print(json.dumps(report, indent=2))
     print(f"-> {cfg.SEAM_MODEL_PATH}")
     return 0

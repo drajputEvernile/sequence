@@ -15,7 +15,7 @@ def load_seam(required: bool = False):
             raise FileNotFoundError(f"no seam model at {path} (scripts/train_seam.py)")
         from .seam import SeamScorer
 
-        return SeamScorer(path, getattr(cfg, "SEAM_DEVICE", "cpu"))
+        return SeamScorer(path)
     except Exception as exc:  # noqa: BLE001
         if required:
             raise

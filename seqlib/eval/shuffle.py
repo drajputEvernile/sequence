@@ -52,25 +52,32 @@ class ShuffledDoc:
         return {new: old for old, new in self.new_of.items()}
 
 
-def shuffle_order(pages: list[int], rng: random.Random, max_ops: int, kinds=OPERATIONS) -> tuple[list[int], list[str]]:
-    """``pages`` (original page numbers, in scan order) put out of order by 1..max_ops operations;
-    returns (the new scan order, what was done). The result always differs from the input."""
+MIN_PAGES_FOR = {"swap": 2, "move_page": 3, "move_block": 4, "reverse_block": 3}
+
+
+def shuffle_order(pages: list[int], rng: random.Random, max_ops: int, kinds=OPERATIONS,
+                  min_ops: int = 1) -> tuple[list[int], list[str]]:
+    """``pages`` (original page numbers, in scan order) put out of order by ``min_ops`` to ``max_ops``
+    operations (a number drawn at random; min_ops = max_ops: exactly that many), each one of the
+    kinds the document is long enough for; returns (the new scan order, what was done). The result
+    always differs from the input."""
     n = len(pages)
-    for _ in range(50):
+    usable = [k for k in kinds if n >= MIN_PAGES_FOR[k]]
+    for _ in range(50 if usable else 0):
         order, done = list(pages), []
-        for _ in range(rng.randint(1, max_ops)):
-            kind = rng.choice(kinds)
-            if kind == "swap" and n >= 2:
+        for _ in range(rng.randint(min_ops, max(min_ops, max_ops))):
+            kind = rng.choice(usable)
+            if kind == "swap":
                 i, j = sorted(rng.sample(range(n), 2))
                 order[i], order[j] = order[j], order[i]
                 done.append(f"swap pages {order[j]} and {order[i]}")
-            elif kind == "move_page" and n >= 3:
+            elif kind == "move_page":
                 i = rng.randrange(n)
                 page = order.pop(i)
                 j = rng.choice([k for k in range(n) if abs(k - i) >= 2] or [0])
                 order.insert(j, page)
                 done.append(f"move page {page} from position {i + 1} to {j + 1}")
-            elif kind == "move_block" and n >= 4:
+            elif kind == "move_block":
                 size = rng.randint(2, max(2, min(8, n // 2)))
                 i = rng.randrange(0, n - size + 1)
                 block = order[i:i + size]
@@ -78,7 +85,7 @@ def shuffle_order(pages: list[int], rng: random.Random, max_ops: int, kinds=OPER
                 j = rng.choice([k for k in range(len(rest) + 1) if k != i] or [0])
                 order = rest[:j] + block + rest[j:]
                 done.append(f"move block {block[0]}..{block[-1]} ({size} pages) from position {i + 1} to {j + 1}")
-            elif kind == "reverse_block" and n >= 3:
+            elif kind == "reverse_block":
                 size = rng.randint(3, max(3, min(10, n)))
                 i = rng.randrange(0, n - size + 1)
                 order[i:i + size] = order[i:i + size][::-1]
@@ -171,7 +178,7 @@ def build(
     out_root: Path, docs: list[str], truths: dict[str, ChartTruth], pipeline_rows: dict[str, dict[int, dict]],
     pipeline_csv_path: Path, truth_csv_path: Path, images: dict[str, list[Path]], ocr: dict[str, list[Path]],
     seed: int, max_ops: int, unchanged_share: float = 0.0, splits: Optional[dict[str, str]] = None,
-    role: str = "test",
+    role: str = "test", min_ops: int = 1,
 ) -> list[ShuffledDoc]:
     out_root = Path(out_root)
     if out_root.exists() and any(out_root.iterdir()):
@@ -185,7 +192,7 @@ def build(
         if rng.random() < unchanged_share:
             order, item.operations = list(pages), ["unchanged (control)"]
         else:
-            order, item.operations = shuffle_order(pages, rng, max_ops)
+            order, item.operations = shuffle_order(pages, rng, max_ops, min_ops=min_ops)
         item.new_of = {old: i for i, old in enumerate(order, start=1)}
         item.pages_moved = sum(1 for old, new in item.new_of.items() if old != new)
         # images

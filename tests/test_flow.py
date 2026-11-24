@@ -219,6 +219,47 @@ def test_shuffle_ops_always_change_the_order():
             assert sorted(order) == pages and order != pages and ops
 
 
+def test_shuffle_ops_exact_count():
+    import random
+
+    from seqlib.eval.shuffle import shuffle_order
+
+    rng = random.Random(2)
+    for n in (4, 9, 40):
+        pages = list(range(1, n + 1))
+        for k in (1, 2, 3, 4, 5):
+            for _ in range(10):
+                order, ops = shuffle_order(pages, rng, k, min_ops=k)
+                assert len(ops) == k and sorted(order) == pages and order != pages
+    order, ops = shuffle_order([1, 2], rng, 5, min_ops=5)  # too short for every kind but a swap
+    assert len(ops) == 5 and all(op.startswith("swap") for op in ops)
+
+
+def test_collect_results_shares_no_document_names(tmp_path):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts"))
+    spec = importlib.util.spec_from_file_location("collect_results", root / "scripts" / "collect_results.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    folder = tmp_path / "shuffle_ops2"
+    run = folder / "outputs" / "eval" / "v9-setaside_truth_test_20261124-100000"
+    run.mkdir(parents=True)
+    (run / "summary.json").write_text(json.dumps({"charts": 2, "position_accuracy": 0.9, "failed_charts": 1,
+                                                  "failures": {"123_456": "boom"}}), encoding="utf-8")
+    (run / "per_chart.csv").write_text("chart\n123_456\n", encoding="utf-8")
+    (folder / "shuffle_manifest.json").write_text(json.dumps({"documents": [
+        {"doc": "123_456", "main_pages": 5, "operations": ["swap pages 1 and 4", "reverse block of 3 pages at position 2"]},
+        {"doc": "789_000", "main_pages": 7, "operations": ["unchanged (control)"]}]}), encoding="utf-8")
+    got = mod.shuffle_set(folder)
+    assert got["built"]["operations_per_document"] == {2: 1} and got["built"]["controls (left in order)"] == 1
+    assert got["evaluations"]["v9-setaside_truth (test)"]["failed_charts"] == 1
+    assert "123_456" not in json.dumps(got) and "789_000" not in json.dumps(got)
+
+
 def test_shuffle_test_copies_renames_and_hides_order(raw, tmp_path):
     import csv
 

@@ -5,11 +5,11 @@ cross-encoder: input "[CLS] a's last lines [SEP] b's first lines", one output. F
 training documents' true neighbour pairs against wrong ones (the scan neighbour when it is wrong,
 the most similar-looking page, a random page of the same document).
 
-It is trained on one half of the training documents (the seam half); v6's evidence model then
-trains on the other half, so the seam's scores on its own training pages cannot inflate v6.
+It is trained on one half of the training documents (the seam half); the evidence model of v8 / v9
+then trains on the other half, so the seam's scores on its own training pages cannot inflate it.
 
 Needs ``torch`` and ``transformers`` (requirements-seam.txt) and a local copy of the base model
-(config.SEAM_BASE_MODEL_PATH); nothing is downloaded. Trains on a GPU when there is one.
+(config.SEAM_BASE_MODEL_PATH); nothing is downloaded. Runs on the CPU only.
 """
 from __future__ import annotations
 
@@ -34,14 +34,13 @@ def seam_half(names: Sequence[str]) -> set[str]:
 
 
 class SeamScorer:
-    def __init__(self, path: Path, device: str = "cpu", max_length: Optional[int] = None, batch: int = 64):
+    def __init__(self, path: Path, max_length: Optional[int] = None, batch: int = 64):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         self.torch = torch
-        self.device = device if (device != "cuda" or torch.cuda.is_available()) else "cpu"
         self.tokenizer = AutoTokenizer.from_pretrained(str(path))
-        self.model = AutoModelForSequenceClassification.from_pretrained(str(path)).to(self.device).eval()
+        self.model = AutoModelForSequenceClassification.from_pretrained(str(path)).eval()
         meta = Path(path) / META
         self.meta = json.loads(meta.read_text(encoding="utf-8")) if meta.is_file() else {}
         # score with the input length the model was trained with (shorter = faster on CPU)
@@ -53,9 +52,9 @@ class SeamScorer:
         with self.torch.no_grad():
             for i in range(0, len(left), self.batch):
                 enc = self.tokenizer(list(left[i:i + self.batch]), list(right[i:i + self.batch]), truncation=True,
-                                     max_length=self.max_length, padding=True, return_tensors="pt").to(self.device)
+                                     max_length=self.max_length, padding=True, return_tensors="pt")
                 logits = self.model(**enc).logits.reshape(-1)
-                out.append(self.torch.sigmoid(logits).cpu().numpy())
+                out.append(self.torch.sigmoid(logits).numpy())
         return np.concatenate(out) if out else np.zeros(0)
 
 
@@ -107,7 +106,7 @@ def training_pairs(examples: Iterable, rng: random.Random) -> list[tuple[str, st
 
 
 def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int = 3, lr: float = 2e-5,
-               batch: int = 32, max_length: int = 256, device: str = "cpu", seed: int = 0,
+               batch: int = 32, max_length: int = 256, seed: int = 0,
                held_share: float = 0.1) -> dict:
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -120,10 +119,9 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     rows = training_pairs(examples, rng)
     train_rows = [r for r in rows if r[3] not in held]
     test_rows = [r for r in rows if r[3] in held]
-    device = device if (device != "cuda" or torch.cuda.is_available()) else "cpu"
 
     tokenizer = AutoTokenizer.from_pretrained(str(base_path))
-    model = AutoModelForSequenceClassification.from_pretrained(str(base_path), num_labels=1).to(device)
+    model = AutoModelForSequenceClassification.from_pretrained(str(base_path), num_labels=1)
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model.train()
@@ -131,8 +129,8 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
 
     batches = (len(train_rows) + batch - 1) // batch
     every = max(1, batches // 20)  # about 20 progress lines per epoch
-    logger.info("seam: %d training pairs (%d held out), %d batches per epoch, %d epochs, input length %d, %s",
-                len(train_rows), len(test_rows), batches, epochs, max_length, device)
+    logger.info("seam: %d training pairs (%d held out), %d batches per epoch, %d epochs, input length %d",
+                len(train_rows), len(test_rows), batches, epochs, max_length)
     started = time.time()
     done = 0
     for epoch in range(epochs):
@@ -141,8 +139,8 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
         for k, i in enumerate(range(0, len(train_rows), batch), start=1):
             chunk = train_rows[i:i + batch]
             enc = tokenizer([r[0] for r in chunk], [r[1] for r in chunk], truncation=True, max_length=max_length,
-                            padding=True, return_tensors="pt").to(device)
-            labels = torch.tensor([float(r[2]) for r in chunk], device=device)
+                            padding=True, return_tensors="pt")
+            labels = torch.tensor([float(r[2]) for r in chunk])
             loss = loss_fn(model(**enc).logits.reshape(-1), labels)
             optim.zero_grad()
             loss.backward()
@@ -165,11 +163,11 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     if test_rows and len({r[2] for r in test_rows}) == 2:
         from sklearn.metrics import roc_auc_score
 
-        scorer = SeamScorer(out_path, device, max_length)
+        scorer = SeamScorer(out_path, max_length)
         probs = scorer.score([r[0] for r in test_rows], [r[1] for r in test_rows])
         auc = round(float(roc_auc_score([r[2] for r in test_rows], probs)), 4)
     meta = {"base_model": str(base_path), "trained_on": names, "held_out_documents": sorted(held),
             "pairs": len(train_rows), "held_out_pairs": len(test_rows), "held_out_auc": auc,
-            "epochs": epochs, "lr": lr, "max_length": max_length, "device": device}
+            "epochs": epochs, "lr": lr, "max_length": max_length}
     (Path(out_path) / META).write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return {k: v for k, v in meta.items() if k not in ("trained_on", "held_out_documents")}

@@ -19,45 +19,30 @@ rebuild with `python docs/build_pdf.py`).
 ```
 python -m venv .venv
 .venv\Scripts\activate            (Linux: source .venv/bin/activate)
-pip install -r requirements.txt   (+ requirements-seam.txt for the seam text model)
+pip install -r requirements-seam.txt    (everything, incl. the seam text model; CPU only)
 python -m pytest -q tests
 ```
 
 ## On the training machine
 
+**Follow [steps.txt](steps.txt)** -- the full rebuild from a fresh folder, in order: packages, the
+seam's base model, config, inputs and split, the shuffle sets, training, scoring, and the results
+to bring back (small separate files in `outputs\share\`, from `scripts\collect_results.py`).
+
 Four inputs, all already produced (nothing is re-run): the raw page images and their OCR (one
-folder per document, `RecordID_DocumentID`), the pipeline outputs CSV and the ground-truth CSV, one
-row per page each. Only documents in all four are used. Set the paths in `config.py`, then once:
+folder per document, `RecordID_DocumentID`), the pipeline outputs CSV and the ground-truth CSV,
+one row per page each. Only documents in all four are used.
 
-```
-python scripts/check_inputs.py            # paths found, pipeline CSV size
-python scripts/inventory.py               # documents in each input, the usable ones
-python scripts/import_ocr.py              # each usable document's OCR -> workspace
-python scripts/make_split.py              # 80/20 by document, stratified
-python scripts/make_shuffle_test.py --from train --role train --min-pages 2 --unchanged 0.3 --count 1000 --out workspace\shuffle_train
-python scripts/make_shuffle_test.py --from test --role test --count 1000 --out workspace\shuffle_eval
-```
+**Shuffle sets.** A shuffle set copies documents and renames their pages so they come out of order
+(swaps, moved pages, moved blocks, reversed blocks), recording every renaming in
+`shuffle_manifest.json`; the originals are only read, and pipeline values computed from the original
+order are blanked in the copy. The models train on `shuffle_train` (train documents, 1-5 random
+operations, 30% left in order) and are scored on six sets built from the same test documents:
+exactly 5, 4, 3, 2 and 1 operations (`shuffle_ops5` ... `shuffle_ops1`) and 1-5 at random
+(`shuffle_random`), then on the real, unshuffled test documents.
 
-A shuffle set copies documents and renames their pages so they come out of order (swaps, moved
-pages, moved blocks, reversed blocks; up to 3 per document), recording every renaming in
-`shuffle_manifest.json`. The originals are only read. Pipeline values computed from the original
-order are blanked in the copy so they cannot give the answer away.
-
-Then train and score (the current commands are in [steps.txt](steps.txt)):
-
-```
-$env:SEQ_CONFIG = "<repo>\workspace\shuffle_train\config_shuffled.py"
-python scripts\train.py --version v9
-$env:SEQ_CONFIG = "<repo>\workspace\shuffle_eval\config_shuffled.py"
-python scripts\evaluate.py --method v9 --set-aside truth
-python scripts\link_report.py                    # which links each method repairs, by evidence
-python scripts\shuffle_report.py                 # by kind of damage
-Remove-Item Env:SEQ_CONFIG
-python scripts\evaluate.py --method v9 --set-aside truth   # no harm on the real test documents
-python scripts\compare.py
-```
-
-Each evaluation writes `summary.json`, `per_chart.csv` and `errors.txt` under `OUTPUT_ROOT/eval/`.
+Each evaluation writes `summary.json`, `per_chart.csv` and `errors.txt` under `OUTPUT_ROOT/eval/`
+(the last two name documents and stay on that machine).
 
 ## Layout
 
