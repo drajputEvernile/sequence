@@ -88,6 +88,13 @@ link: printed page number 25%, bare number 23%, dates / encounter 15%, list / se
 none 28%. Retrained with the scan neighbour + two random pages, all of the seam half, lr 5e-5, the
 held-out AUC per epoch (best epoch kept). Bar to keep the seam: about 0.80 against random pages.
 
+Retrained seam (5 epochs; epoch 5 kept: +0.009 over epoch 4 while the loss fell 0.51 -> 0.46): on
+the 195 unseen documents, 0.77 against random pages and 0.74 against the scan neighbour (TF-IDF 0.69 /
+0.67) -- a modest signal TF-IDF does not carry; kept in v8 / v9. Against the most similar page 0.39
+(TF-IDF 0.17): neither tells a sibling page (same form, another visit) from the true next one. No help
+at document boundaries (0.50-0.56). Its own documents: 0.90 against random pages -- more documents,
+not more epochs, would be the next lever.
+
 Link report (v8): of 3,424 true links the shuffle broke 721; only 36 had a page-number anchor (all
 repaired since v4); within-document links: 32% repaired. v8's real-data loss is one in-order
 document the gate flagged (0.99) and scrambled.
