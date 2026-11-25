@@ -117,8 +117,9 @@ def training_pairs(examples: Iterable, rng: random.Random, negatives: Sequence[s
     return rows
 
 
-def _held_out_auc(model, tokenizer, rows, max_length: int, batch: int = 64) -> Optional[tuple[float, dict]]:
-    """AUC of the model on held-out pairs (all three kinds of wrong page) and by kind."""
+def _held_out_auc(model, tokenizer, rows, max_length: int, batch: int = 64) -> Optional[tuple[float, dict, float]]:
+    """AUC of the model on held-out pairs: against the kinds of wrong page it learns from
+    (TRAIN_NEGATIVES -- the one the best epoch is chosen by), by kind, and against all kinds."""
     if not rows or len({r[2] for r in rows}) < 2:
         return None
     import torch
@@ -133,11 +134,13 @@ def _held_out_auc(model, tokenizer, rows, max_length: int, batch: int = 64) -> O
                             padding=True, return_tensors="pt")
             probs += torch.sigmoid(model(**enc).logits.reshape(-1)).tolist()
     model.train()
-    return round(float(roc_auc_score([r[2] for r in rows], probs)), 4), {
-        kind: round(float(roc_auc_score([1] * sum(r[2] for r in rows) + [0] * sum(r[4] == kind for r in rows),
-                                        [p for r, p in zip(rows, probs) if r[2]]
-                                        + [p for r, p in zip(rows, probs) if r[4] == kind])), 4)
-        for kind in NEGATIVE_KINDS if any(r[4] == kind for r in rows)}
+
+    def auc(keep) -> float:
+        sel = [(r[2], p) for r, p in zip(rows, probs) if r[2] or keep(r[4])]
+        return round(float(roc_auc_score([y for y, _ in sel], [p for _, p in sel])), 4)
+
+    by_kind = {kind: auc(lambda k, kind=kind: k == kind) for kind in NEGATIVE_KINDS if any(r[4] == kind for r in rows)}
+    return auc(lambda k: k in TRAIN_NEGATIVES), by_kind, auc(lambda k: True)
 
 
 def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int = 3, lr: float = 5e-5,
@@ -172,6 +175,11 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     model = AutoModelForSequenceClassification.from_pretrained(str(start), num_labels=1)
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss()
+    rescored = None
+    if resume and test_rows:  # the saved epoch's score, measured the way this run measures
+        rescored = _held_out_auc(model, tokenizer, test_rows, max_length)
+        logger.info("seam: saved epoch %s re-scored: held-out AUC %s", before.get("epochs"),
+                    rescored[0] if rescored else None)
     model.train()
 
     def save(meta_extra: dict) -> None:
@@ -184,7 +192,7 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     done_before = int(before.get("epochs") or 0)
     # resume goes on from the saved (best) epoch; later epochs that were not kept are dropped
     curve = [c for c in before.get("epoch_curve") or [] if c["epoch"] <= done_before]
-    best = before.get("held_out_auc") if resume else None
+    best = (rescored[0] if rescored else before.get("held_out_auc")) if resume else None
     meta = {"base_model": before.get("base_model", str(base_path)), "trained_on": names,
             "held_out_documents": held_names, "pairs": len(train_rows), "held_out_pairs": len(test_rows),
             "negatives": list(TRAIN_NEGATIVES), "lr": lr, "max_length": max_length,
@@ -219,13 +227,15 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
                             total / min(len(train_rows), i + len(chunk)), elapsed // 60, left // 60)
         epoch_loss = round(total / max(1, len(train_rows)), 4)
         got = _held_out_auc(model, tokenizer, test_rows, max_length) if test_rows else None
-        auc, by_kind = got if got else (None, None)
-        curve.append({"epoch": epoch, "loss": epoch_loss, "held_out_auc": auc, "by_kind": by_kind})
-        logger.info("seam epoch %d: loss %.4f  held-out AUC %s  %s", epoch, epoch_loss, auc,
+        auc, by_kind, auc_all = got if got else (None, None, None)
+        curve.append({"epoch": epoch, "loss": epoch_loss, "held_out_auc": auc, "by_kind": by_kind,
+                      "all_kinds": auc_all})
+        logger.info("seam epoch %d: loss %.4f  held-out AUC %s (all kinds %s)  %s", epoch, epoch_loss, auc, auc_all,
                     "  ".join(f"vs {k} {v}" for k, v in (by_kind or {}).items()))
         if auc is None or best is None or auc > best:
             best = auc
-            save({"held_out_auc": auc, "held_out_auc_by_kind": by_kind, "epochs": epoch, "epoch_curve": curve})
+            save({"held_out_auc": auc, "held_out_auc_by_kind": by_kind, "held_out_auc_all_kinds": auc_all,
+                  "epochs": epoch, "epoch_curve": curve})
             logger.info("seam: epoch %d saved (best so far)", epoch)
         else:
             meta["epoch_curve"] = curve
