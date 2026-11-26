@@ -164,11 +164,15 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     if resume:
         before = json.loads((Path(out_path) / META).read_text(encoding="utf-8"))
         saved = set(before.get("trained_on") or [])
-        if saved != set(names):
+        common = saved & set(names)
+        if len(common) < 0.9 * max(len(names), 1):
             raise ValueError(
                 f"resume: the documents differ from the ones the saved seam learned from (saved: {len(saved)}, "
-                f"now: {len(names)}, in common: {len(saved & set(names))}; is SEQ_CONFIG set to the training "
+                f"now: {len(names)}, in common: {len(common)}; is SEQ_CONFIG set to the training "
                 "shuffle set's config_shuffled.py?)")
+        if saved != set(names):
+            logger.info("seam resume: saved %d documents, now %d, in common %d -- going on; every document "
+                        "it has learned from stays excluded from v8 / v9's fit", len(saved), len(names), len(common))
         rng = random.Random(seed + int(before.get("epochs") or 0))
     train_rows = training_pairs(examples, rng)
     # the held-out pairs include the "most similar" kind too, to see the seam against every kind
@@ -197,7 +201,9 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     # resume goes on from the saved (best) epoch; later epochs that were not kept are dropped
     curve = [c for c in before.get("epoch_curve") or [] if c["epoch"] <= done_before]
     best = (rescored[0] if rescored else before.get("held_out_auc")) if resume else None
-    meta = {"base_model": before.get("base_model", str(base_path)), "trained_on": names,
+    # every document the seam has ever learned from (v8 / v9 leave all of them out of their fit)
+    meta = {"base_model": before.get("base_model", str(base_path)),
+            "trained_on": sorted(set(names) | set(before.get("trained_on") or [])),
             "held_out_documents": held_names, "pairs": len(train_rows), "held_out_pairs": len(test_rows),
             "negatives": list(TRAIN_NEGATIVES), "lr": lr, "max_length": max_length,
             "held_out_auc": best, "held_out_auc_by_kind": before.get("held_out_auc_by_kind"),
