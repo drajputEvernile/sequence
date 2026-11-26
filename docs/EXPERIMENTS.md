@@ -95,6 +95,11 @@ the 195 unseen documents, 0.77 against random pages and 0.74 against the scan ne
 at document boundaries (0.50-0.56). Its own documents: 0.90 against random pages -- more documents,
 not more epochs, would be the next lever.
 
+Two more epochs (--resume): epoch 6 not kept, epoch 7 kept (held-out 0.7667 vs epoch 5 re-scored
+0.7623). On the 195 unseen documents: 0.774 against random pages (+0.006), 0.743 against the scan
+neighbour, true next ranked first 0.365 (+0.016); on its own documents 0.934 (+0.035) -- the gap
+widens, so the seam stops at epoch 7.
+
 Link report (v8): of 3,424 true links the shuffle broke 721; only 36 had a page-number anchor (all
 repaired since v4); within-document links: 32% repaired. v8's real-data loss is one in-order
 document the gate flagged (0.99) and scrambled.
