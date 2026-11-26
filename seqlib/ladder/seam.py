@@ -164,7 +164,8 @@ def train_seam(base_path: Path, out_path: Path, examples: Iterable, epochs: int 
     if resume:
         before = json.loads((Path(out_path) / META).read_text(encoding="utf-8"))
         if sorted(before.get("trained_on") or []) != names:
-            raise ValueError("resume: the documents differ from the ones the saved seam learned from")
+            raise ValueError("resume: the documents differ from the ones the saved seam learned from "
+                             "(is SEQ_CONFIG set to the training shuffle set's config_shuffled.py?)")
         rng = random.Random(seed + int(before.get("epochs") or 0))
     train_rows = training_pairs(examples, rng)
     # the held-out pairs include the "most similar" kind too, to see the seam against every kind
